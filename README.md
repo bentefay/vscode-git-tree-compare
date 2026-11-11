@@ -1,4 +1,18 @@
-# Git Tree Compare
+# Git Tree Compare — Ben's fork
+
+This fork builds as `bentefay.git-tree-compare`. Disable the upstream extension
+in any VS Code profile where this fork is enabled, since commands and views
+retain their upstream identifiers.
+
+For the pinned Nix/devenv environment, agent test loop and distribution commands,
+see [Development](docs/DEVELOPMENT.md) and the [security review](docs/SECURITY-REVIEW.md).
+
+```sh
+cli/bin/run setup
+cli/bin/run verify
+cli/bin/run release --tag v1.21.0-ben.1 --draft --dry-run
+cli/bin/run install --profile 'Git Tree Compare Development' --dry-run
+```
 
 This [Visual Studio Code](https://code.visualstudio.com/) extension helps you compare your working tree against a branch, tag, or commit in a natural **folder tree structure** or a flat list.
 

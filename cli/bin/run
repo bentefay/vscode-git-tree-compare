@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+GTC_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+export GTC_INVOCATION_CWD="${GTC_INVOCATION_CWD:-$PWD}"
+cd "$GTC_ROOT"
+if [[ "${GTC_DEVENV:-}" != 1 ]]; then
+    exec "$GTC_ROOT/scripts/devenv" shell -- "$GTC_ROOT/cli/bin/run" "$@"
+fi
+if [[ ! -f node_modules/clipanion/package.json ]]; then
+    npm ci --ignore-scripts
+fi
+exec node cli/bin/run.mjs "$@"

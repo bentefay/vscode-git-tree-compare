@@ -5,6 +5,7 @@ import { workspace, OutputChannel, WorkspaceFolder } from 'vscode';
 import { Git, Repository, IExecutionResult } from './git/git';
 import { Ref, Branch } from './git/api/git';
 import { normalizePath } from './fsUtils';
+import { readFileStats } from './fileStats';
 import { API as GitAPI } from './typings/git';
 
 export async function createGit(gitApi: GitAPI, outputChannel: OutputChannel): Promise<Git> {
@@ -304,28 +305,13 @@ function parseDiffNumstat(repoRoot: string, out: string): Map<string, IDiffStats
     return stats;
 }
 
-const BINARY_CHECK_BYTES = 8192;
-
 async function computeUntrackedStats(entries: IDiffStatus[]): Promise<void> {
-    await Promise.all(entries.map(async (entry) => {
-        try {
-            const buf = Buffer.alloc(BINARY_CHECK_BYTES);
-            const handle = await fs.open(entry.dstAbsPath, 'r');
-            try {
-                const { bytesRead } = await handle.read(buf, 0, BINARY_CHECK_BYTES, 0);
-                if (buf.subarray(0, bytesRead).includes(0)) {
-                    entry.stats = { insertions: undefined, deletions: undefined, isBinary: true };
-                    return;
-                }
-            } finally {
-                await handle.close();
-            }
-            const content = await fs.readFile(entry.dstAbsPath, 'utf-8');
-            const lines = content.split('\n');
-            const lineCount = content.endsWith('\n') ? lines.length - 1 : lines.length;
-            entry.stats = { insertions: lineCount, deletions: 0, isBinary: false };
-        } catch {
-            // File may be inaccessible
+    // Limit concurrent reads as well as the bytes read per file.
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(8, entries.length) }, async () => {
+        while (next < entries.length) {
+            const entry = entries[next++];
+            entry.stats = await readFileStats(entry.dstAbsPath);
         }
     }));
 }
@@ -402,17 +388,17 @@ export async function getDiffStatuses(repo: Repository, ref: string, findRenames
 }
 
 export async function hasUncommittedChanges(repo: Repository, path: string, ignoreUntracked: boolean = false): Promise<boolean> {
-    const args = ['status', '-z'];
+    const args = ['--literal-pathspecs', 'status', '-z'];
     if (ignoreUntracked) {
         args.push('-uno');
     }
-    args.push(path);
+    args.push('--', path);
     const result = await repo.exec(args);
     return result.stdout.trim() !== '';
 }
 
 export async function rmFile(repo: Repository, absPath: string): Promise<void> {
-    await repo.exec(['rm', '-f', absPath]);
+    await repo.exec(['--literal-pathspecs', 'rm', '-f', '--', absPath]);
 }
 
 /**

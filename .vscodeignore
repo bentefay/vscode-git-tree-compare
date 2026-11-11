@@ -1,7 +1,8 @@
-.vscode
-node_modules
-out/
-src/
-.gitignore
-tsconfig.json
-webpack.config.js
+**
+!package.json
+!README.md
+!LICENSE
+!CHANGELOG.md
+!resources/**
+!dist/extension.js
+!dist/extension.js.LICENSE.txt

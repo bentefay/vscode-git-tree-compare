@@ -2508,7 +2508,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             if (answer !== btn) {
                 return;
             }
-            actions[0]();
+            await actions[0]();
         } else {
             let msg = `Are you sure you want to discard changes in ${prompts.length} files?`;
             if (uncommittedChanges.length > 0) {
@@ -2539,7 +2539,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             if (file.status == 'D') {
                 continue;
             }
-            this.doOpenFile(comparison, file.dstAbsPath, file.status, false);
+            await this.doOpenFile(comparison, file.dstAbsPath, file.status, false);
         }
     }
 
@@ -2584,7 +2584,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         if (comparison.baseRef === baseRef) {
             return;
         }
-        window.withProgress({ location: ProgressLocation.Window, title: 'Updating Tree Base' }, async _ => {
+        await window.withProgress({ location: ProgressLocation.Window, title: 'Updating Tree Base' }, async _ => {
             try {
                 await comparison.updateRefs(baseRef);
             } catch (e: any) {
@@ -2627,7 +2627,8 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             }
         } catch (e: any) {
             this.log('Error checking for uncommitted changes', e);
-            // Continue anyway
+            window.showErrorMessage('Cannot verify that the working tree is clean. PR comparison was cancelled.');
+            return;
         }
 
         // Prompt for PR URL
@@ -2784,7 +2785,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
 
                 // Update the comparison base to the PR base branch (use origin/* to avoid stale refs)
                 try {
-                    const originBaseRef = `origin/${baseRef}`;
+                    const originBaseRef = `${baseRemoteName}/${baseRef}`;
                     this.log(`Updating base to: ${originBaseRef}`);
                     await comparison.updateRefs(originBaseRef);
                     await comparison.updateDiff(false);

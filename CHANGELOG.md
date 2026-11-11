@@ -1,5 +1,10 @@
 ## Unreleased
 
+* Add a pinned devenv/direnv/Nix toolchain, Safe Chain dependency protection and agent verification loop.
+* Add CLI commands to package, publish GitHub releases and install the fork locally.
+* Harden Git revision/path handling, shallow-history fetching, PR cleanliness checks and file statistics.
+* Require Workspace Trust and use the fork extension ID `bentefay.git-tree-compare`.
+
 * Remember the tree/list view mode across restarts via the new `viewMode` setting [#162](https://github.com/letmaik/vscode-git-tree-compare/issues/162)
 
 ## 1.21.0
@@ -55,7 +60,7 @@
 
 ## 1.15.1
 
-* Fixed "Discard Changes" incorrectly restoring files to base ref instead of merge base 
+* Fixed "Discard Changes" incorrectly restoring files to base ref instead of merge base
 
 ## 1.15.0
 
@@ -221,7 +226,7 @@
 
 * Fixed extension activation not working on VS Code 1.16.0.
 Note that this is a temporary work-around which now always enables the extension, even if the workspace has no git repository (previously the extension would be disabled then). The work-around is necessary due to a [breaking change in VS Code](https://github.com/Microsoft/vscode/issues/33618) and makes sure that the extension keeps working for users with versions older than 1.16.0 as well as for newer versions.
-Once VS Code 1.16.0 is rolled out to all users the final fix will be applied and the original behaviour can be restored. 
+Once VS Code 1.16.0 is rolled out to all users the final fix will be applied and the original behaviour can be restored.
 For details see [#23](https://github.com/letmaik/vscode-git-tree-compare/issues/23).
 
 ## 1.1.0

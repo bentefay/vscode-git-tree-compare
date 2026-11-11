@@ -10,10 +10,12 @@
             "name": "Launch Extension",
             "runtimeExecutable": "${execPath}",
             "args": [
-                "--extensionDevelopmentPath=${workspaceFolder}"
+                "--extensionDevelopmentPath=${workspaceFolder}",
+                "--user-data-dir=${workspaceFolder}/.cache/debug/user-data",
+                "--extensions-dir=${workspaceFolder}/.cache/debug/extensions"
             ],
             "outFiles": ["${workspaceFolder}/dist/**/*.js"],
-            "preLaunchTask": "npm: watch"
+            "preLaunchTask": "Build extension"
         }
     ]
 }

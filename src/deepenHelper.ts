@@ -140,8 +140,8 @@ export async function tryDeepenForMergeBase(
     }, async (progress, token) => {
         progress.report({ message: 'Fetching full history...' });
         try {
-            log('Unshallowing repository (git pull --unshallow)');
-            await gitApiRepo.pull(true);
+            log('Unshallowing repository (git fetch --unshallow)');
+            await repository.exec(['fetch', '--unshallow', '--', targets[0].remote], { cancellationToken: token });
         } catch (e: any) {
             log(`Unshallow failed: ${e.message || e}`);
             return undefined;

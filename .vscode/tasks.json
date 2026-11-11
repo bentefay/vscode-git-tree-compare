@@ -1,26 +1,30 @@
 {
-    // See https://go.microsoft.com/fwlink/?LinkId=733558
-    // for the documentation about the tasks.json format
     "version": "2.0.0",
-    "presentation": {
-        "echo": false,
-        "reveal": "always",
-        "focus": false,
-        "panel": "dedicated",
-        "showReuseMessage": false
-    },
     "tasks": [
         {
-            "type": "npm",
-            "script": "watch",
+            "label": "Build extension",
+            "type": "process",
+            "command": "${workspaceFolder}/cli/bin/run",
+            "args": [
+                "build"
+            ],
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
             "problemMatcher": [
-                "$ts-webpack-watch"
+                "$ts-webpack"
+            ]
+        },
+        {
+            "label": "Verify extension",
+            "type": "process",
+            "command": "${workspaceFolder}/cli/bin/run",
+            "args": [
+                "verify"
             ],
-            "isBackground": true
+            "group": "test",
+            "problemMatcher": []
         }
     ]
 }

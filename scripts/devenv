@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Bootstrap the CLI from the same Nixpkgs revision as devenv.yaml.
+# Does not change the user's global Nix profile.
+exec nix shell github:NixOS/nixpkgs/f4a03c008967841f2a0b3cb7c436fc6fc31671f6#devenv --command devenv "$@"

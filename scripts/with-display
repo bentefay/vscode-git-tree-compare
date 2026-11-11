@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $(uname -s) != Linux ]]; then
+    exec "$@"
+fi
+# Electron can prefer the inherited Wayland compositor despite Xvfb's DISPLAY.
+# Never let automated windows attach to the user's desktop.
+unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_ACTIVATION_TOKEN DESKTOP_STARTUP_ID
+export XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb
+export ELECTRON_OZONE_PLATFORM_HINT=x11
+export XDG_RUNTIME_DIR="${GTC_TEST_RESULTS:?}/runtime"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+# A private display and window manager keep focus-dependent refresh deterministic.
+# shellcheck disable=SC2016 # Expanded inside the child shell, not this launcher.
+exec xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session --config-file="${GTC_DBUS_CONFIG:?}" -- bash -c '
+set -euo pipefail
+openbox >"${GTC_TEST_RESULTS:?}/openbox.log" 2>&1 &
+wm_pid=$!
+trap '\''kill "$wm_pid" 2>/dev/null || true'\'' EXIT
+"$@"
+' bash "$@"

@@ -2,4 +2,9 @@ out/
 dist/
 node_modules/
 *.vsix
-package-lock.json
+.devenv/
+.direnv/
+.cache/
+.vscode-test/
+artifacts/
+test-results/

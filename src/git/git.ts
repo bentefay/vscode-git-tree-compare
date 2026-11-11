@@ -5,6 +5,7 @@
 
 import { promises as fs, exists, realpath } from 'fs';
 import * as path from 'path';
+import { validateRevision } from '../gitSafety';
 import * as os from 'os';
 import * as cp from 'child_process';
 import * as which from 'which';
@@ -587,7 +588,7 @@ export class Git {
 			GIT_PAGER: 'cat'
 		});
 
-		if (options.cwd) {
+		if (typeof options.cwd === 'string') {
 			options.cwd = sanitizePath(options.cwd);
 		}
 
@@ -1332,7 +1333,7 @@ export class Repository {
 		try {
 			if (paths && paths.length > 0) {
 				for (const chunk of splitInChunks(paths.map(sanitizePath), MAX_CLI_LENGTH)) {
-					await this.exec([...args, '--', ...chunk]);
+					await this.exec(['--literal-pathspecs', ...args, '--', ...chunk]);
 				}
 			} else {
 				await this.exec(args);
@@ -2122,7 +2123,9 @@ export class Repository {
 	}
 
 	async getCommit(ref: string): Promise<Commit> {
-		const result = await this.exec(['show', '-s', `--format=${COMMIT_FORMAT}`, '-z', ref]);
+		validateRevision(ref);
+		const resolved = await this.exec(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]);
+		const result = await this.exec(['show', '-s', `--format=${COMMIT_FORMAT}`, '-z', resolved.stdout.trim(), '--']);
 		const commits = parseGitCommits(result.stdout);
 		if (commits.length === 0) {
 			return Promise.reject<Commit>('bad commit format');
