@@ -73,3 +73,45 @@ Local files also offer **Open Containing Folder** in their context menu. The
 command opens the desktop file manager; it is unavailable for remote-only or
 missing files.
 
+
+## Send inline feedback to Orca
+
+Hover a line and use the comment gutter **+**, or select a range and run
+**Git Tree Compare: Add Orca Comment** (also in the editor context menu).
+Orca comments are available on every line of local Git files, including
+unchanged lines, ordinary editors, and either side of a Git diff. Expand hidden
+unchanged sections before selecting them. If GitHub also offers comments there,
+VS Code asks which provider to use; select **Orca Review**. The dedicated command
+bypasses that provider picker.
+
+**Send to Orca** submits your feedback with the exact Git worktree, relative file,
+line range, revision information and a snapshot of the selected code. Unsaved
+editor content is included and labelled. The extension finds the matching local
+Orca workspace by path, prefers the selected agent in its tab layout, and otherwise
+uses the first connected, writable terminal agent in visual order. Ordinary shells
+and other worktrees are excluded. It focuses the destination after Orca accepts
+the message. With multiple split editor groups, Orca's CLI does not expose keyboard
+focus between groups; the first group's selected eligible agent wins.
+
+**Save Note** keeps an editable note locally in this VS Code workspace. Saved notes
+and delivery results survive reloads and are not synced to other machines. Text
+still being composed must be saved explicitly. Notes keep their original code
+snapshot; they do not automatically track lines across subsequent edits.
+
+Failed sends retain an editable note. If delivery is uncertain (for example the
+CLI connection is lost), the note remains visible but cannot be sent again from
+that thread. Check Orca first; use **Copy Note** if you need to recover it manually.
+An accepted message is never resent automatically, including when focusing the
+pane fails. “Accepted; turn start unconfirmed” means Orca took the message but did
+not report a started turn within ten seconds.
+
+Install Orca's CLI and keep Orca running. `gitTreeCompare.orca.cliPath` optionally
+sets the executable path in user settings (no arguments); otherwise discovery
+uses `ORCA_CLI_COMMAND`, or `orca-ide` on Linux and `orca` on macOS/Windows.
+`orca-dev` is used when `ORCA_DEV_REPO_ROOT` is present. Linux discovery never
+launches the unrelated `orca` screen reader. Missing or incompatible CLIs produce
+an error without downloading or installing anything.
+
+This integration currently supports local terminal agents. Native Orca chat tabs,
+Remote SSH/WSL VS Code windows, and Windows `.cmd` CLI wrappers are not supported.
+Disable `gitTreeCompare.orca.enabled` and reload to remove the comment provider.

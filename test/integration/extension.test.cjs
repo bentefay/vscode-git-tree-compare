@@ -302,3 +302,85 @@ describe('Repository review workflow', () => {
         assert.ok(provider.reviewStore.get(comparison.keyForReview(node)).fingerprint);
     });
 });
+
+describe('Orca inline review comments', () => {
+    let comments;
+    const control = path.join(process.env.GTC_TEST_RESULTS, 'orca-control.json');
+    const calls = async () => (await fs.readFile(path.join(process.env.GTC_TEST_RESULTS, 'orca-calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    before(async () => {
+        ({ orcaComments: comments } = await vscode.extensions.getExtension('bentefay.git-tree-compare').activate());
+    });
+    afterEach(async () => { await fs.writeFile(control, '{}'); });
+
+    it('allows multiline feedback on unchanged files and sends the range to the selected worktree agent', async () => {
+        const file = path.join(root, 'orca-unchanged.txt');
+        await fs.writeFile(file, 'one\ntwo\nthree\nfour\n');
+        git('add', file); git('commit', '-m', 'Unchanged Orca review fixture');
+        const document = await vscode.workspace.openTextDocument(file);
+        const ranges = await comments.controller.commentingRangeProvider.provideCommentingRanges(document);
+        assert.equal(ranges[0].start.line, 0);
+        assert.equal(ranges[0].end.line, 4);
+        const editor = await vscode.window.showTextDocument(document);
+        editor.selection = new vscode.Selection(1, 0, 2, 5);
+        const thread = await vscode.commands.executeCommand('gitTreeCompare.orca.addComment');
+        assert.equal(thread.range.start.line, 1); assert.equal(thread.range.end.line, 2);
+        await vscode.commands.executeCommand('gitTreeCompare.orca.send', { thread, text: 'Simplify these two lines' });
+        assert.equal(thread.contextValue, 'sent');
+        const send = (await calls()).filter(a => a[1] === 'send').at(-1);
+        const prompt = send[send.indexOf('--text') + 1];
+        const payload = JSON.parse(prompt.slice(prompt.indexOf('\n') + 1));
+        assert.equal(payload.worktree, root); assert.deepEqual(payload.lines, [2, 3]);
+        assert.equal(payload.code, 'two\nthree'); assert.equal(payload.feedback, 'Simplify these two lines');
+        assert.equal(send[send.indexOf('--terminal') + 1], 'selected-agent');
+        assert.equal((await calls()).at(-1)[1], 'switch');
+        await vscode.commands.executeCommand('gitTreeCompare.orca.delete', thread);
+    });
+
+    it('captures deleted Git revision content and keeps failed notes editable', async () => {
+        const api = vscode.extensions.getExtension('vscode.git').exports.getAPI(1);
+        const uri = api.toGitUri(vscode.Uri.file(path.join(root, 'orca-unchanged.txt')), git('rev-parse', 'HEAD'));
+        await fs.unlink(path.join(root, 'orca-unchanged.txt'));
+        const document = await vscode.workspace.openTextDocument(uri);
+        assert.ok(await comments.controller.commentingRangeProvider.provideCommentingRanges(document));
+        const thread = comments.controller.createCommentThread(uri, new vscode.Range(0, 0, 1, 0), []);
+        await fs.writeFile(control, JSON.stringify({ mode: 'no-agent' }));
+        await vscode.commands.executeCommand('gitTreeCompare.orca.send', { thread, text: 'Keep my failed note' });
+        assert.equal(thread.contextValue, 'draft');
+        assert.equal(thread.comments[0].body, 'Keep my failed note');
+        assert.equal(thread.comments[0].mode, vscode.CommentMode.Editing);
+        await fs.writeFile(control, '{}');
+        await vscode.commands.executeCommand('gitTreeCompare.orca.sendDraft', thread.comments[0]);
+        assert.equal(thread.contextValue, 'sent');
+        const send = (await calls()).filter(a => a[1] === 'send').at(-1);
+        assert.match(send[send.indexOf('--text') + 1], /Git revision [a-f0-9]{40}/);
+        await fs.writeFile(path.join(root, 'orca-unchanged.txt'), 'one\ntwo\nthree\nfour\n');
+        await vscode.commands.executeCommand('gitTreeCompare.orca.delete', thread);
+    });
+
+    it('routes a file from a linked worktree to that checkout rather than the workspace main repository', async () => {
+        const linked = path.join(process.env.GTC_TEST_RESULTS, 'linked-review');
+        git('worktree', 'add', '--detach', linked, 'HEAD');
+        const uri = vscode.Uri.file(path.join(linked, 'orca-unchanged.txt'));
+        const thread = comments.controller.createCommentThread(uri, new vscode.Range(0, 0, 0, 0), []);
+        await vscode.commands.executeCommand('gitTreeCompare.orca.send', { thread, text: 'Feedback for this linked worktree' });
+        assert.equal(thread.contextValue, 'sent');
+        const send = (await calls()).filter(a => a[1] === 'send').at(-1);
+        const prompt = send[send.indexOf('--text') + 1];
+        const payload = JSON.parse(prompt.slice(prompt.indexOf('\n') + 1));
+        assert.equal(payload.worktree, linked);
+        await vscode.commands.executeCommand('gitTreeCompare.orca.delete', thread);
+    });
+
+    it('keeps an uncertain note without allowing a duplicate submission', async () => {
+        const uri = vscode.Uri.file(path.join(root, 'orca-unchanged.txt'));
+        const thread = comments.controller.createCommentThread(uri, new vscode.Range(0, 0, 0, 0), []);
+        await fs.writeFile(control, JSON.stringify({ mode: 'uncertain' }));
+        await vscode.commands.executeCommand('gitTreeCompare.orca.send', { thread, text: 'Possibly delivered' });
+        assert.equal(thread.contextValue, 'uncertain');
+        const count = (await calls()).filter(a => a[1] === 'send').length;
+        await vscode.commands.executeCommand('gitTreeCompare.orca.send', { thread, text: 'Possibly delivered' });
+        assert.equal((await calls()).filter(a => a[1] === 'send').length, count);
+        assert.equal(thread.comments[0].body, 'Possibly delivered');
+        await vscode.commands.executeCommand('gitTreeCompare.orca.delete', thread);
+    });
+});

@@ -1,5 +1,7 @@
 ## Unreleased
 
+* Add native inline Orca review comments on any line, local draft persistence, and CLI delivery to an agent in the matching worktree.
+
 * Persist and sync content-validated review checkboxes across sessions, filters and branches, retaining the last approved comparison through edits and rebases.
 * Dim generated and configured paths, and initially collapse folders containing only de-emphasized changes.
 * Add Open Containing Folder for existing local files.

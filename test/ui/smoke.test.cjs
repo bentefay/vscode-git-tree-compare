@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { VSBrowser, ActivityBar, By, Workbench, Key } = require('vscode-extension-tester');
+const { VSBrowser, ActivityBar, By, Workbench, Key, InputBox } = require('vscode-extension-tester');
 
 describe('Packaged VSIX', function () {
     let browser;
@@ -14,6 +14,37 @@ describe('Packaged VSIX', function () {
             }
             return false;
         }, 15000, `Tree row ${label} must be visible`);
+    }
+
+    async function openFile(name) {
+        const modifier = process.platform === 'darwin' ? Key.COMMAND : Key.CONTROL;
+        await browser.driver.actions().keyDown(modifier).sendKeys('p').keyUp(modifier).perform();
+        const quickOpen = await InputBox.create();
+        await quickOpen.setText(path.join(process.env.GTC_TEST_REPOSITORY, name));
+        await quickOpen.confirm();
+        await browser.driver.wait(async () => {
+            const tabs = await browser.driver.findElements(By.css('.tab.active'));
+            for (const tab of tabs) if ((await tab.getAttribute('aria-label') || '').includes(name)) return true;
+            return false;
+        }, 10000, 'The unchanged file must be active');
+    }
+
+    async function clickCommentButton(label) {
+        await browser.driver.wait(async () => {
+            try {
+                for (const item of await browser.driver.findElements(By.css('.review-widget .monaco-button'))) {
+                    if (await item.isDisplayed() && (await item.getText()) === label &&
+                        (await item.getAttribute('aria-disabled')) !== 'true') {
+                        await item.click();
+                        return true;
+                    }
+                }
+            } catch (error) {
+                if (error.name !== 'StaleElementReferenceError') throw error;
+                // Comment action buttons are replaced when input enablement changes.
+            }
+            return false;
+        }, 10000, `${label} must be an enabled native comment action`);
     }
 
     before(async function () {
@@ -33,7 +64,8 @@ describe('Packaged VSIX', function () {
     });
     afterEach(async function () {
         if (!browser) return;
-        await browser.takeScreenshot(this.currentTest.state === 'failed' ? 'failure' : 'tree');
+        await browser.driver.actions().clear();
+        await browser.takeScreenshot((this.currentTest.state === 'failed' ? 'failure-' : 'tree-') + this.currentTest.title.replace(/[^a-z]+/gi, '-').slice(0, 65));
         await fs.writeFile(path.join(process.env.GTC_TEST_RESULTS, 'workbench.html'), await browser.driver.getPageSource());
     });
     after(async () => {
@@ -58,6 +90,52 @@ describe('Packaged VSIX', function () {
         assert.ok((await browser.driver.findElements(By.css('.monaco-diff-editor'))).length);
     });
 
+    it('offers native Orca comments on unchanged lines and sends the typed feedback', async () => {
+        await openFile('other.txt');
+        await new Workbench().executeCommand('Git Tree Compare: Add Orca Comment');
+        const input = await browser.driver.wait(async () => {
+            const items = await browser.driver.findElements(By.css('.comment-form .monaco-editor'));
+            for (const item of items) if (await item.isDisplayed()) return item;
+            return false;
+        }, 15000, 'The native comment editor must appear on an unchanged file');
+        await browser.driver.actions().clear();
+        await input.click();
+        await browser.driver.actions().sendKeys('Please simplify this unchanged line.').perform();
+        await browser.takeScreenshot('orca-comment-editor');
+        await clickCommentButton('Send to Orca');
+        const callsFile = path.join(process.env.GTC_TEST_RESULTS, 'orca-calls.jsonl');
+        await browser.driver.wait(async () => {
+            const calls = (await fs.readFile(callsFile, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(JSON.parse);
+            return calls.some(args => args[1] === 'switch');
+        }, 15000, 'The fake Orca CLI must accept the message and focus the target');
+        const calls = (await fs.readFile(callsFile, 'utf8')).trim().split('\n').map(JSON.parse);
+        const send = calls.find(args => args[1] === 'send');
+        assert.equal(send[send.indexOf('--terminal') + 1], 'selected-agent');
+        const prompt = send[send.indexOf('--text') + 1];
+        assert.ok(prompt.includes('Please simplify this unchanged line.'));
+        assert.ok(prompt.includes('other.txt'));
+        await browser.takeScreenshot('orca-comment-sent');
+        // Keep the original comparison view visible for the following review tests.
+        await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
+    });
+
+    it('saves an editable Orca note before the editor restart', async () => {
+        await openFile('committed.txt');
+        await new Workbench().executeCommand('Git Tree Compare: Add Orca Comment');
+        await browser.driver.actions().clear();
+        const editor = await browser.driver.wait(async () => {
+            for (const item of await browser.driver.findElements(By.css('.comment-form .monaco-editor'))) {
+                if (await item.isDisplayed()) return item;
+            }
+            return false;
+        }, 10000);
+        await editor.click();
+        await browser.driver.actions().sendKeys('Saved review draft').perform();
+        await clickCommentButton('Save Note');
+        await browser.driver.wait(async () => (await browser.driver.getPageSource()).includes('Saved locally'), 10000);
+        await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
+    });
+
     it('dims generated files, preserves manual expansion and offers the local folder action', async () => {
         const generated = await row('generated');
         assert.equal(await generated.getAttribute('aria-expanded'), 'false');
@@ -66,7 +144,8 @@ describe('Packaged VSIX', function () {
         const output = await row('output.ts');
         const manual = await row('manual.ts');
         const labelColor = async row => (await row.findElement(By.css('.label-name'))).getCssValue('color');
-        assert.notEqual(await labelColor(output), await labelColor(manual), 'Generated output should have the muted theme color');
+        await browser.driver.wait(async () => (await labelColor(output)) !== (await labelColor(manual)), 10000,
+            'Generated output should have the muted theme color once decorations arrive');
         await new Workbench().executeCommand('Git Tree Compare: Refresh');
         assert.equal(await (await row('generated')).getAttribute('aria-expanded'), 'true', 'Refresh must preserve manual expansion');
         await browser.driver.actions().contextClick(await row('manual.ts')).perform();
@@ -85,9 +164,18 @@ describe('Packaged VSIX', function () {
     });
     it('restores review progress after a full restart and retains the approved hash after edits', async () => {
         const checkbox = async () => (await row('example.txt')).findElement(By.css('[role="checkbox"]'));
+        // Read each render atomically: refreshing the tree legitimately replaces rows.
+        const checkedState = () => browser.driver.executeScript(() => {
+            for (const row of document.querySelectorAll('.customview-tree .monaco-list-row')) {
+                if (row.querySelector('.label-name')?.textContent === 'example.txt') {
+                    return row.querySelector('[role="checkbox"]')?.getAttribute('aria-checked');
+                }
+            }
+            return null;
+        });
         await (await checkbox()).click();
         await new Workbench().executeCommand('Git Tree Compare: Refresh');
-        await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'true', 15000,
+        await browser.driver.wait(async () => (await checkedState()) === 'true', 15000,
             'The review must validate before restarting');
         await browser.quit();
         // ExTester wipes settings before each start. The launcher restores this
@@ -103,7 +191,7 @@ describe('Packaged VSIX', function () {
         await browser.start(process.env.GTC_UI_LAUNCHER, [process.env.GTC_TEST_REPOSITORY]);
         await browser.waitForWorkbench();
         await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
-        await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'true', 15000,
+        await browser.driver.wait(async () => (await checkedState()) === 'true', 15000,
             'The review must survive quitting and restarting VS Code');
         // Record even transient unchecked renders while switching views.
         await browser.driver.executeScript(() => {
@@ -122,7 +210,7 @@ describe('Packaged VSIX', function () {
         await (await new ActivityBar().getViewControl('Explorer')).openView();
         await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
         await new Workbench().executeCommand('Git Tree Compare: Refresh');
-        await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'true', 15000);
+        await browser.driver.wait(async () => (await checkedState()) === 'true', 15000);
         const flicker = await browser.driver.executeScript(() => {
             window.reviewObserver.disconnect();
             return window.reviewFlicker;
@@ -130,11 +218,29 @@ describe('Packaged VSIX', function () {
         assert.deepEqual(flicker, [], 'Switching views must not briefly render reviewed files unchecked');
         const file = path.join(process.env.GTC_TEST_REPOSITORY, 'example.txt');
         await fs.writeFile(file, 'changed by an agent after review\n');
-        await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'false', 15000,
+        await browser.driver.wait(async () => (await checkedState()) === 'false', 15000,
             'An external edit must invalidate the review');
         await fs.writeFile(file, 'working changes\n');
-        await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'true', 15000,
+        await browser.driver.wait(async () => (await checkedState()) === 'true', 15000,
             'Restoring the approved version must restore its check');
+    });
+
+    it('restores the saved Orca note after the full editor restart', async () => {
+        await openFile('committed.txt');
+        const glyph = await browser.driver.wait(async () => {
+            for (const item of await browser.driver.findElements(By.css('.comment-range-glyph.comment-thread'))) {
+                if (await item.isDisplayed()) return item;
+            }
+            return false;
+        }, 10000, 'The saved thread must be restored');
+        await glyph.click();
+        await browser.driver.wait(async () => {
+            for (const item of await browser.driver.findElements(By.css('.review-widget'))) {
+                if (await item.isDisplayed() && (await item.getText()).includes('Saved review draft')) return true;
+            }
+            return false;
+        }, 10000, 'The restored draft must contain the original feedback');
+        await browser.takeScreenshot('orca-draft-restored');
     });
 
 });

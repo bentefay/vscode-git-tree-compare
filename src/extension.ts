@@ -6,6 +6,7 @@ import { CommitsTreeProvider } from './commitsProvider';
 import { createGit } from './gitHelper';
 import { toDisposable } from './git/util';
 import { GitExtension } from './typings/git';
+import { OrcaComments } from './orcaComments';
 
 export async function activate(context: ExtensionContext) {
     const disposables: Disposable[] = [];
@@ -50,6 +51,8 @@ export async function activate(context: ExtensionContext) {
 
     disposables.push(provider, treeView);
     await provider.init(treeView);
+    const orcaComments = new OrcaComments(context, git, gitApi);
+    disposables.push(orcaComments);
 
     // The "Commits" panel is optional and disabled by default; create/dispose it
     // according to the gitTreeCompare.showCommitsPanel setting.
@@ -200,5 +203,5 @@ export async function activate(context: ExtensionContext) {
         return provider!.manualRefresh();
     });
 
-    return { provider };
+    return { provider, orcaComments };
 }

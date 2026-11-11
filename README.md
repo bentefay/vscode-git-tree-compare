@@ -131,12 +131,24 @@ menu, enter the PR URL, and authenticate when prompted. This fetches the PR and
 checks out a local branch before comparing it with its base. The command requires
 a clean working tree.
 
+## Inline feedback to Orca
+
+Select lines in a local Git file or diff and run **Git Tree Compare: Add Orca
+Comment**, or use the gutter **+** and choose **Orca Review**. Comments work on
+unchanged lines too. **Send to Orca** sends the note and code context to an agent
+in the matching Orca worktree, then focuses it. **Save Note** keeps a local draft.
+Requires Orca's CLI and a running terminal agent; native chat tabs are not yet
+supported. See [Orca review notes](docs/REVIEWING.md#send-inline-feedback-to-orca)
+for target selection, setup and delivery behaviour.
+
 ## Useful settings
 
 Find all settings by searching for `gitTreeCompare` in VS Code Settings.
 
 | Setting (`gitTreeCompare.…`) | Default | Purpose |
 | --- | --- | --- |
+| `orca.enabled` | `true` | Enable inline comments for Orca terminal agents. |
+| `orca.cliPath` | Automatic | Override the Orca CLI executable in user settings. |
 | `showCheckboxes` | `false` | Track reviewed files and folders. |
 | `showCommitsPanel` | `false` | Filter changes by a contiguous commit range. |
 | `deemphasizedPaths` | `[]` | Additional globs for gray files and collapsed folders. |

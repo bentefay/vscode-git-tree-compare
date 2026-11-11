@@ -295,6 +295,52 @@
                 "command": "gitTreeCompare.openContainingFolder",
                 "title": "Open Containing Folder",
                 "category": "Git Tree Compare"
+            },
+            {
+                "command": "gitTreeCompare.orca.addComment",
+                "title": "Add Orca Comment",
+                "category": "Git Tree Compare"
+            },
+            {
+                "command": "gitTreeCompare.orca.send",
+                "title": "Send to Orca",
+                "category": "Git Tree Compare",
+                "enablement": "!commentIsEmpty"
+            },
+            {
+                "command": "gitTreeCompare.orca.save",
+                "title": "Save Note",
+                "category": "Git Tree Compare",
+                "enablement": "!commentIsEmpty"
+            },
+            {
+                "command": "gitTreeCompare.orca.sendDraft",
+                "title": "Send to Orca",
+                "category": "Git Tree Compare",
+                "enablement": "!commentIsEmpty"
+            },
+            {
+                "command": "gitTreeCompare.orca.saveDraft",
+                "title": "Save Note",
+                "category": "Git Tree Compare",
+                "enablement": "!commentIsEmpty"
+            },
+            {
+                "command": "gitTreeCompare.orca.edit",
+                "title": "Edit Note",
+                "category": "Git Tree Compare"
+            },
+            {
+                "command": "gitTreeCompare.orca.delete",
+                "title": "Delete Note",
+                "category": "Git Tree Compare",
+                "icon": "$(trash)"
+            },
+            {
+                "command": "gitTreeCompare.orca.copy",
+                "title": "Copy Note",
+                "category": "Git Tree Compare",
+                "icon": "$(copy)"
             }
         ],
         "submenus": [
@@ -319,6 +365,34 @@
                 },
                 {
                     "command": "gitTreeCompare.openContainingFolder",
+                    "when": "false"
+                },
+                {
+                    "command": "gitTreeCompare.orca.send",
+                    "when": "false"
+                },
+                {
+                    "command": "gitTreeCompare.orca.save",
+                    "when": "false"
+                },
+                {
+                    "command": "gitTreeCompare.orca.sendDraft",
+                    "when": "false"
+                },
+                {
+                    "command": "gitTreeCompare.orca.saveDraft",
+                    "when": "false"
+                },
+                {
+                    "command": "gitTreeCompare.orca.edit",
+                    "when": "false"
+                },
+                {
+                    "command": "gitTreeCompare.orca.delete",
+                    "when": "false"
+                },
+                {
+                    "command": "gitTreeCompare.orca.copy",
                     "when": "false"
                 }
             ],
@@ -671,6 +745,49 @@
                     "when": "view == gitTreeCompare && viewItem == file-local",
                     "group": "1_open@3"
                 }
+            ],
+            "comments/commentThread/context": [
+                {
+                    "command": "gitTreeCompare.orca.send",
+                    "group": "inline@0",
+                    "when": "commentController == git-tree-compare-orca && commentThreadIsEmpty"
+                },
+                {
+                    "command": "gitTreeCompare.orca.save",
+                    "group": "inline@1",
+                    "when": "commentController == git-tree-compare-orca && commentThreadIsEmpty"
+                }
+            ],
+            "comments/comment/context": [
+                {
+                    "command": "gitTreeCompare.orca.sendDraft",
+                    "group": "inline@0",
+                    "when": "commentController == git-tree-compare-orca && comment == draft"
+                },
+                {
+                    "command": "gitTreeCompare.orca.saveDraft",
+                    "group": "inline@1",
+                    "when": "commentController == git-tree-compare-orca && comment == draft"
+                }
+            ],
+            "comments/commentThread/title": [
+                {
+                    "command": "gitTreeCompare.orca.copy",
+                    "group": "navigation@0",
+                    "when": "commentController == git-tree-compare-orca && commentThread != sending && !commentThreadIsEmpty"
+                },
+                {
+                    "command": "gitTreeCompare.orca.delete",
+                    "group": "navigation@1",
+                    "when": "commentController == git-tree-compare-orca && commentThread != sending && !commentThreadIsEmpty"
+                }
+            ],
+            "editor/context": [
+                {
+                    "command": "gitTreeCompare.orca.addComment",
+                    "group": "navigation@20",
+                    "when": "config.gitTreeCompare.orca.enabled && isWorkspaceTrusted && (resourceScheme == file || resourceScheme == git)"
+                }
             ]
         },
         "configuration": {
@@ -843,6 +960,17 @@
                     "default": true,
                     "scope": "resource",
                     "markdownDescription": "Dim files marked `linguist-generated` or `linguist-generated=true` in Git attributes and initially collapse folders containing only de-emphasized changes."
+                },
+                "gitTreeCompare.orca.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable native Orca review comments on all lines of local Git files. Reload the window after changing this setting."
+                },
+                "gitTreeCompare.orca.cliPath": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "application",
+                    "description": "Path to the Orca CLI executable (no arguments). Empty uses ORCA_CLI_COMMAND or platform discovery (orca-ide on Linux). Requires a local terminal agent; native chat tabs are not supported yet."
                 }
             }
         }

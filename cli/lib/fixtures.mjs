@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile, cp, rm, lstat } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, cp, rm, lstat, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { exec, root } from './process.mjs';
@@ -18,8 +18,11 @@ export async function fixture(label) {
         GIT_AUTHOR_NAME: 'Test Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
         GIT_COMMITTER_NAME: 'Test Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' };
     for (const key of Object.keys(env)) {
-        if (/^(VSCODE_|ELECTRON_|NODE_OPTIONS$)/.test(key) || /^(GITHUB_TOKEN|GH_TOKEN|VSCE_PAT|SSH_AUTH_SOCK|GIT_ASKPASS|SSH_ASKPASS|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_CONFIG_PARAMETERS)$/.test(key)) delete env[key];
+        if (/^(VSCODE_|ELECTRON_|ORCA_|NODE_OPTIONS$)/.test(key) || /^(GITHUB_TOKEN|GH_TOKEN|VSCE_PAT|SSH_AUTH_SOCK|GIT_ASKPASS|SSH_ASKPASS|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_CONFIG_PARAMETERS)$/.test(key)) delete env[key];
     }
+    env.ORCA_CLI_COMMAND = path.join(directory, 'orca-cli');
+    await cp(path.join(root, 'test/fixtures/orca-cli.cjs'), env.ORCA_CLI_COMMAND);
+    await chmod(env.ORCA_CLI_COMMAND, 0o755);
     const git = (...args) => exec('git', args, { cwd: repo, env, capture: true });
     await git('init', '-b', 'main');
     await writeFile(path.join(repo, 'example.txt'), 'base\n');
