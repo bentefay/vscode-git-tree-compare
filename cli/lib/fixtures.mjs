@@ -31,11 +31,18 @@ export async function fixture(label) {
     await writeFile(path.join(repo, 'committed.txt'), 'feature\n');
     await git('add', '.'); await git('commit', '-m', 'Feature');
     await writeFile(path.join(repo, 'example.txt'), 'working changes\n');
+    await mkdir(path.join(repo, 'generated'));
+    await mkdir(path.join(repo, 'mixed'));
+    await writeFile(path.join(repo, '.gitattributes'), 'generated/** linguist-generated=true\nmixed/generated.ts linguist-generated\n');
+    await writeFile(path.join(repo, 'generated/output.ts'), '// generated output\n');
+    await writeFile(path.join(repo, 'mixed/generated.ts'), '// generated\n');
+    await writeFile(path.join(repo, 'mixed/manual.ts'), '// review this\n');
     await mkdir(path.join(repo, '.vscode'));
     await writeFile(path.join(repo, '.vscode/settings.json'), JSON.stringify({
         'gitTreeCompare.showCommitsPanel': true,
         'gitTreeCompare.compactFolders': false,
         'gitTreeCompare.autoRefresh': false,
+        'gitTreeCompare.showCheckboxes': true,
     }));
     const userData = path.join(directory, 'user-data');
     await mkdir(path.join(userData, 'User'), { recursive: true });

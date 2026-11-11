@@ -63,7 +63,7 @@ export async function ui() {
         // ExTester currently has no extra launch-args hook. Keep new VS Code shared
         // application storage out of ~/.vscode-shared with a narrow exec wrapper.
         const launcher = path.join(f.directory, 'code');
-        await writeFile(launcher, `#!/usr/bin/env bash\nexec "\${GTC_VSCODE_PATH:?}" "--shared-data-dir=\${GTC_SHARED_DATA:?}" ${process.platform === 'linux' ? '--ozone-platform=x11 --force-device-scale-factor=1 ' : ''}"$@"\n`, { mode: 0o755 });
+        await writeFile(launcher, `#!/usr/bin/env bash\nset -euo pipefail\n# ExTester resets its settings directory; retain our disposable profile across restarts.\nif [[ -d "\${TEST_RESOURCES:?}/restart-profile" ]]; then cp -R -- "\${TEST_RESOURCES:?}/restart-profile/." "\${TEST_RESOURCES:?}/settings/"; fi\nexec "\${GTC_VSCODE_PATH:?}" "--shared-data-dir=\${GTC_SHARED_DATA:?}" ${process.platform === 'linux' ? '--ozone-platform=x11 --force-device-scale-factor=1 ' : ''}"$@"\n`, { mode: 0o755 });
         const env = { ...f.env, GTC_VSCODE_VERSION: version, GTC_VSCODE_PATH: binary,
             GTC_UI_LAUNCHER: launcher,
             GTC_TEST_REPOSITORY: f.repo, GTC_TEST_RESULTS: f.directory,

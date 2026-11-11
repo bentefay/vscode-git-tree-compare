@@ -1,5 +1,9 @@
 ## Unreleased
 
+* Persist and sync content-validated review checkboxes across sessions, filters and branches, retaining the last approved comparison through edits and rebases.
+* Dim generated and configured paths, and initially collapse folders containing only de-emphasized changes.
+* Add Open Containing Folder for existing local files.
+
 * Add a pinned devenv/direnv/Nix toolchain, Safe Chain dependency protection and agent verification loop.
 * Add CLI commands to package, publish GitHub releases and install the fork locally.
 * Harden Git revision/path handling, shallow-history fetching, PR cleanliness checks and file statistics.

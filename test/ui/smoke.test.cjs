@@ -1,10 +1,21 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { VSBrowser, ActivityBar, By } = require('vscode-extension-tester');
+const { VSBrowser, ActivityBar, By, Workbench, Key } = require('vscode-extension-tester');
 
 describe('Packaged VSIX', function () {
     let browser;
+    async function row(label) {
+        return browser.driver.wait(async () => {
+            const rows = await browser.driver.findElements(By.css('.customview-tree .monaco-list-row'));
+            for (const row of rows) {
+                const labels = await row.findElements(By.css('.label-name'));
+                for (const item of labels) if (await item.getText() === label && await row.isDisplayed()) return row;
+            }
+            return false;
+        }, 15000, `Tree row ${label} must be visible`);
+    }
+
     before(async function () {
         browser = new VSBrowser(process.env.GTC_VSCODE_VERSION, 'stable', {
             'workbench.startupEditor': 'none', 'window.dialogStyle': 'custom',
@@ -46,4 +57,61 @@ describe('Packaged VSIX', function () {
             15000, 'Diff editor must open');
         assert.ok((await browser.driver.findElements(By.css('.monaco-diff-editor'))).length);
     });
+
+    it('dims generated files, preserves manual expansion and offers the local folder action', async () => {
+        const generated = await row('generated');
+        assert.equal(await generated.getAttribute('aria-expanded'), 'false');
+        assert.equal(await (await row('mixed')).getAttribute('aria-expanded'), 'true');
+        await (await generated.findElement(By.css('.monaco-tl-twistie'))).click();
+        const output = await row('output.ts');
+        const manual = await row('manual.ts');
+        const labelColor = async row => (await row.findElement(By.css('.label-name'))).getCssValue('color');
+        assert.notEqual(await labelColor(output), await labelColor(manual), 'Generated output should have the muted theme color');
+        await new Workbench().executeCommand('Git Tree Compare: Refresh');
+        assert.equal(await (await row('generated')).getAttribute('aria-expanded'), 'true', 'Refresh must preserve manual expansion');
+        await browser.driver.actions().contextClick(await row('manual.ts')).perform();
+        await browser.driver.wait(async () => {
+            const items = await browser.driver.findElements(By.css('.context-view .action-label'));
+            for (const item of items) if ((await item.getText()).includes('Open Containing Folder')) return true;
+            return false;
+        }, 5000, 'Existing local files must offer Open Containing Folder');
+        await browser.driver.actions().clear();
+        await browser.driver.actions().sendKeys(Key.ESCAPE).perform();
+        await browser.driver.wait(async () => {
+            const blockers = await browser.driver.findElements(By.css('.context-view-block'));
+            for (const blocker of blockers) if (await blocker.isDisplayed()) return false;
+            return true;
+        }, 5000, 'Context menu must close before continuing');
+    });
+    it('restores review progress after a full restart and retains the approved hash after edits', async () => {
+        const checkbox = async () => (await row('example.txt')).findElement(By.css('[role="checkbox"]'));
+        await (await checkbox()).click();
+        await new Workbench().executeCommand('Git Tree Compare: Refresh');
+        await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'true', 15000,
+            'The review must validate before restarting');
+        await browser.quit();
+        // ExTester wipes settings before each start. The launcher restores this
+        // disposable profile, including the real VS Code storage database.
+        await fs.cp(path.join(process.env.TEST_RESOURCES, 'settings'), path.join(process.env.TEST_RESOURCES, 'restart-profile'), {
+            recursive: true,
+            filter: async source => {
+                if (path.basename(source) === 'DevToolsActivePort') return false;
+                const stat = await fs.lstat(source);
+                return stat.isFile() || stat.isDirectory();
+            },
+        });
+        await browser.start(process.env.GTC_UI_LAUNCHER, [process.env.GTC_TEST_REPOSITORY]);
+        await browser.waitForWorkbench();
+        await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
+        await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'true', 15000,
+            'The review must survive quitting and restarting VS Code');
+        const file = path.join(process.env.GTC_TEST_REPOSITORY, 'example.txt');
+        await fs.writeFile(file, 'changed by an agent after review\n');
+        await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'false', 15000,
+            'An external edit must invalidate the review');
+        await fs.writeFile(file, 'working changes\n');
+        await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'true', 15000,
+            'Restoring the approved version must restore its check');
+    });
+
 });

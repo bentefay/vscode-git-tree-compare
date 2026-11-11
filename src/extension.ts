@@ -44,6 +44,7 @@ export async function activate(context: ExtensionContext) {
         {
             treeDataProvider: provider,
             canSelectMany: true,
+            manageCheckboxStateManually: true,
         }
     );
 
@@ -87,6 +88,8 @@ export async function activate(context: ExtensionContext) {
     register(NAMESPACE + '.openChanges', node => {
         return provider!.openChanges(node);
     });
+
+    register(NAMESPACE + '.openContainingFolder', node => provider!.openContainingFolder(node));
 
     register(NAMESPACE + '.openFile', (node, nodes) => {
         return provider!.openFile(nodes || [node]);

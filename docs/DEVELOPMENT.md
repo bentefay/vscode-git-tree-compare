@@ -85,7 +85,7 @@ fork has its own extension ID but shares command, view and setting identifiers.
    `@vscode/test-cli` / `@vscode/test-electron` run tests in the real host.
 3. Run `test ui` for the distributed artifact. ExTester and a matching
    ChromeDriver open an isolated VS Code with the packaged extension installed.
-   The test opens the comparison view and a diff editor and records a screenshot.
+   The tests open a diff editor, inspect generated-file styling and context menus, and verify review persistence across a full editor restart. The launcher restores the same disposable profile after ExTester resets its settings directory; it never uses the personal editor profile. Extension-host test mode intentionally uses in-memory VS Code storage, so persistence is verified in the packaged UI layer. Screenshots and workbench HTML are recorded.
 4. Inspect `test-results/` and fix failures. Run `verify` for the final check.
    CI runs the same command and uploads the VSIX and diagnostic evidence.
 
