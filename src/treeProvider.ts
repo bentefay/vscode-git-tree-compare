@@ -210,12 +210,20 @@ class RepositoryComparison {
     async refreshReviews(): Promise<void> {
         const epoch = this.reviewEpoch;
         const signature = JSON.stringify([this.headName, this.headCommit, this.getDiffEndpoints()]);
-        this.checkboxStates.clear();
-        await this.host.reviewStore.reconcile();
+        const nextStates = new Map<string, CheckboxStateInfo>();
+        // Keep the last validated UI state until its replacement is ready.
+        // Actual file/document edits invalidate their own rows immediately.
+        try { await this.host.reviewStore.reconcile(); }
+        catch (error) { this.invalidateReviews(); throw error; }
         const records = this.host.reviewStore.snapshot();
         const candidates = this.reviewFiles().filter(file => records[this.keyForReview(file)]?.fingerprint);
-        if (!candidates.length) { return; }
-        const context = await this.fingerprintContext();
+        if (!candidates.length) {
+            if (epoch === this.reviewEpoch) { this.checkboxStates = nextStates; }
+            return;
+        }
+        let context: Awaited<ReturnType<RepositoryComparison['fingerprintContext']>>;
+        try { context = await this.fingerprintContext(); }
+        catch (error) { this.invalidateReviews(); throw error; }
         const checked = await boundedMap(candidates, async file => {
             if (this.isDirty(file.dstAbsPath)) { return undefined; }
             try {
@@ -230,9 +238,10 @@ class RepositoryComparison {
         const current = this.host.reviewStore.snapshot();
         for (const result of checked) {
             if (result && current[this.keyForReview(result.file)]?.fingerprint === result.fingerprint && !this.isDirty(result.file.dstAbsPath)) {
-                this.checkboxStates.set(result.file.dstAbsPath, { state: TreeItemCheckboxState.Checked });
+                nextStates.set(result.file.dstAbsPath, { state: TreeItemCheckboxState.Checked });
             }
         }
+        this.checkboxStates = nextStates;
     }
 
     private async updateReviewMetadata(diff: IDiffStatus[]): Promise<void> {
@@ -1105,16 +1114,10 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         this.disposables.push(workspace.onDidSaveTextDocument(document => this.handleWorkspaceChange(document.uri)));
         this.disposables.push(workspace.onDidCloseTextDocument(document => this.handleWorkspaceChange(document.uri)));
         this.disposables.push(window.onDidChangeWindowState(state => {
-            if (!state.focused) { return; }
-            for (const comparison of this.comparisons.values()) {
-                this.handleWorkspaceChange(Uri.file(comparison.repoRoot));
-            }
-            this.fireTreeDataChange();
+            if (state.focused) { this.revalidateOnResume(); }
         }));
         this.disposables.push(treeView.onDidChangeVisibility(event => {
-            if (event.visible) {
-                for (const comparison of this.comparisons.values()) { this.handleWorkspaceChange(Uri.file(comparison.repoRoot)); }
-            }
+            if (event.visible) { this.revalidateOnResume(); }
         }));
 
         this.disposables.push(treeView.onDidChangeCheckboxState(this.handleChangeCheckboxState, this));
@@ -1999,8 +2002,13 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         }
         // Also invalidate in-flight hashes. Review correctness remains enabled
         // when automatic Git diff refresh is disabled.
-        comparison.invalidateReviews(uri.fsPath === comparison.repoRoot ? undefined : uri.fsPath);
-        this.fireTreeDataChange();
+        // A repository status event is not evidence that every file changed.
+        // Cancel stale in-flight work but retain checks until validation finishes.
+        if (uri.fsPath === comparison.repoRoot) { comparison.reviewEpoch++; }
+        else {
+            comparison.invalidateReviews(uri.fsPath);
+            this.fireTreeDataChange();
+        }
         this.pendingRefreshRoots.add(comparison.repoRoot);
         if (comparison === this.commitsComparison) {
             // Notify dependents (e.g. the commits list) about the relevant change before
@@ -2015,6 +2023,19 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             this.pendingRefreshTimer = undefined;
             void this.processPendingRefreshes();
         }, 2000);
+    }
+
+    private revalidateOnResume(): void {
+        for (const comparison of this.comparisons.values()) {
+            this.pendingRefreshRoots.add(comparison.repoRoot);
+        }
+        if (this.pendingRefreshTimer) {
+            clearTimeout(this.pendingRefreshTimer);
+            this.pendingRefreshTimer = undefined;
+        }
+        // Focus/visibility is a request to validate, not a file-change event.
+        // Bypass the write-burst debounce and publish the results atomically.
+        void this.processPendingRefreshes();
     }
 
     /**

@@ -160,6 +160,32 @@ describe('Repository review workflow', () => {
         await eventually(() => checked(node));
     });
 
+    it('keeps validated checks visible during focus and view revalidation', async () => {
+        const node = await find(reviewPath);
+        await mark(node);
+        const original = comparison.fingerprinter.fingerprint.bind(comparison.fingerprinter);
+        let release, entered = false;
+        const gate = new Promise(resolve => { release = resolve; });
+        comparison.fingerprinter.fingerprint = async (...args) => {
+            if (args[0].dstAbsPath === reviewPath) { entered = true; await gate; }
+            return original(...args);
+        };
+        try {
+            provider.handleWorkspaceChange(vscode.Uri.file(root));
+            assert.equal(checked(node), true, 'Repository status alone must not clear checks');
+            provider.revalidateOnResume();
+            assert.equal(provider.pendingRefreshTimer, undefined, 'Resume must bypass the write debounce');
+            await eventually(() => entered);
+            assert.equal(checked(node), true, 'Keep the check while its replacement fingerprint is computed');
+            release();
+            await eventually(() => !provider.refreshInProgress);
+            assert.equal(checked(node), true);
+        } finally {
+            release();
+            comparison.fingerprinter.fingerprint = original;
+        }
+    });
+
     it('detects agent edits through VS Code watchers and returns hidden files to the tree', async () => {
         await vscode.workspace.getConfiguration('gitTreeCompare').update('autoRefresh', true, vscode.ConfigurationTarget.Workspace);
         await vscode.commands.executeCommand('workbench.view.extension.gitTreeCompare');

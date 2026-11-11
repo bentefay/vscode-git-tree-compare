@@ -105,6 +105,29 @@ describe('Packaged VSIX', function () {
         await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
         await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'true', 15000,
             'The review must survive quitting and restarting VS Code');
+        // Record even transient unchecked renders while switching views.
+        await browser.driver.executeScript(() => {
+            window.reviewFlicker = [];
+            window.reviewObserver = new MutationObserver(() => {
+                const rows = document.querySelectorAll('.customview-tree .monaco-list-row');
+                for (const row of rows) {
+                    if (row.querySelector('.label-name')?.textContent === 'example.txt' &&
+                        row.querySelector('[role="checkbox"]')?.getAttribute('aria-checked') === 'false') {
+                        window.reviewFlicker.push('unchecked');
+                    }
+                }
+            });
+            window.reviewObserver.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-checked'] });
+        });
+        await (await new ActivityBar().getViewControl('Explorer')).openView();
+        await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
+        await new Workbench().executeCommand('Git Tree Compare: Refresh');
+        await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'true', 15000);
+        const flicker = await browser.driver.executeScript(() => {
+            window.reviewObserver.disconnect();
+            return window.reviewFlicker;
+        });
+        assert.deepEqual(flicker, [], 'Switching views must not briefly render reviewed files unchecked');
         const file = path.join(process.env.GTC_TEST_REPOSITORY, 'example.txt');
         await fs.writeFile(file, 'changed by an agent after review\n');
         await browser.driver.wait(async () => (await (await checkbox()).getAttribute('aria-checked')) === 'false', 15000,
