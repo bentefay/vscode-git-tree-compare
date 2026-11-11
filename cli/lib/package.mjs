@@ -10,7 +10,7 @@ export async function inspectPackage(filename) {
     const entries = (await exec('unzip', ['-Z1', filename], { capture: true })).split('\n');
     const bundled = JSON.parse(await exec('unzip', ['-p', filename, 'extension/package.json'], { capture: true }));
     if (bundled.publisher !== manifest.publisher || bundled.name !== manifest.name) {
-        throw new Error('VSIX identity does not match this fork.');
+        throw new Error('VSIX identity does not match this extension.');
     }
     if (!entries.includes('extension/dist/extension.js')) throw new Error('Missing extension bundle.');
     const forbidden = entries.filter(p => /^extension\/(?:cli|test|src|out|node_modules|artifacts|\.cache|\.devenv|\.git)\//.test(p));

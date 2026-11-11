@@ -1,6 +1,6 @@
 # Working in this repository
 
-This is Ben's fork of letmaik/vscode-git-tree-compare. Read `docs/DEVELOPMENT.md`
+This repository contains the Git Tree Compare extension. Read `docs/DEVELOPMENT.md`
 and `docs/SECURITY-REVIEW.md` before changing the development environment or Git
 operations. The extension entry point is `src/extension.ts`; `treeProvider.ts`
 owns comparisons and tree state; `commitsProvider.ts` owns commit selection.
@@ -48,6 +48,6 @@ commands does not itself authorize publishing a release or changing the user's
 editor. When the user asks to publish/install, use the commands as documented;
 do not publish to the upstream repository or Marketplace by accident.
 
-The fork has extension ID `bentefay.git-tree-compare`, but retains upstream
+The extension ID is `bentefay.git-tree-compare`, and it retains upstream
 command/view identifiers. Disable the upstream extension in any profile that
-enables the fork.
+enables this extension.

@@ -1,158 +1,107 @@
-# Git Tree Compare — Ben's fork
+# Git Tree Compare
 
-This fork builds as `bentefay.git-tree-compare`. Disable the upstream extension
-in any VS Code profile where this fork is enabled, since commands and views
-retain their upstream identifiers.
+Compare your working tree with a branch, tag or commit in VS Code. Browse changes
+as a folder tree or flat list, open diffs, and track what you have reviewed—even
+when an agent keeps editing files in the background.
 
-For the pinned Nix/devenv environment, agent test loop and distribution commands,
-see [Development](docs/DEVELOPMENT.md) and the [security review](docs/SECURITY-REVIEW.md).
+- Preview branch and pull-request changes, with optional commit-range filtering.
+- Keep review checkboxes across restarts, branch switches and rebases.
+- Sync review progress between machines using VS Code Settings Sync.
+- Dim generated files and collapse less important folders using repository rules.
+- Compare linked Git worktrees and multiple repositories.
+
+## Install
+
+Requires VS Code 1.108 or later, Git, and a trusted workspace with the built-in Git
+extension enabled.
+
+Install a built `.vsix` through **Extensions → … → Install from VSIX…**. To build
+and install from this checkout, install Nix with flakes enabled, then run:
 
 ```sh
 cli/bin/run setup
-cli/bin/run verify
-cli/bin/run release --tag v1.21.0-ben.1 --draft --dry-run
-cli/bin/run install --profile 'Git Tree Compare Development' --dry-run
+cli/bin/run install
 ```
 
-This [Visual Studio Code](https://code.visualstudio.com/) extension helps you compare your working tree against a branch, tag, or commit in a natural **folder tree structure** or a flat list.
+`install` builds the VSIX and uses VS Code's default profile. Add
+`--profile 'Development'` to target a named profile, or use `package` to build
+without installing. Artifacts and SHA-256 checksums are written to `artifacts/`.
+See [development and distribution](docs/DEVELOPMENT.md) for prerequisites,
+verification and GitHub release commands.
 
-It is perfect for keeping an eye on what your pull request will look like, a **pull request preview** one could say. You don't have to leave your editor at all anymore!
+The extension ID is `bentefay.git-tree-compare`. Disable
+`letmaik.git-tree-compare` in the same profile: both extensions use the same
+command and view identifiers.
 
-In bigger projects with many files it also provides **context**, it gives you a quick way to figure out which of those files you have been working on in your feature branch. This comes in handy when you work on several branches in parallel, or simply when you forgot where you left off the following day.
+## Start a comparison
 
-<img src="screenshots/main.png" alt="Screenshot of Git Tree Compare view" width="243" />
+1. Open a Git repository and select **Git Tree Compare** in the activity bar.
+2. Use **Change Base…** to choose a branch, tag or commit.
+3. Select a file to open its diff. Use the context menu to open the file itself,
+   copy its path, or open its containing folder on disk.
+4. Use the view toolbar to search, refresh, or switch between tree and list views.
 
-## Features
+The default **merge** mode compares your working tree with its common ancestor
+with the selected base, which is useful for reviewing a feature branch. **Full**
+mode compares directly with the selected base. The chosen base is remembered per
+repository.
 
-- Working tree comparison against any chosen branch, tag, or commit
+You can open multiple diffs at once, or use **Open All Changes** for VS Code's
+multi-file diff editor. **Discard Changes** restores files from the comparison
+base; use it only when you intend to replace those changes.
 
-- Compare GitHub Pull Requests
+## Track review progress
 
-- Switch between tree and list view
+Enable review checkboxes in VS Code settings:
 
-- Compare in merge or full mode
+```json
+{
+    "gitTreeCompare.showCheckboxes": true
+}
+```
 
-- Open Changes or Open File
+Check a file after reviewing it. Checking a folder approves its changed
+descendants, including children that are collapsed. **Hide Checked Files** lets
+you concentrate on the remaining work.
 
-- Open all changes at once in VS Code's multi-file diff editor
+Each repository, branch and file retains its **last explicitly approved
+fingerprint**. Edits make the checkbox unchecked without deleting that approval.
+Restoring the same comparison restores the check. Branch switches, rebases and
+filters retain progress; approving a new version replaces the fingerprint, and
+explicitly unchecking clears the approval.
 
-- Discard Changes
+Fingerprints include both sides of the comparison, so a changed base can require
+re-review even if your file is unchanged. Unsaved editor changes also invalidate
+checks; save before approving a file.
 
-- Automatic refresh on file changes
+Progress lives in VS Code extension storage and participates in Settings Sync.
+Clones with the same normalized `origin` URL and branch share progress; each
+machine validates its own contents before displaying a check. Repositories
+without a network `origin` retain local progress. See
+[review storage, sync and edge cases](docs/REVIEWING.md) for details.
 
-- Remembers the chosen comparison base per repository
+## Collapse generated and low-priority changes
 
-- Log output of all git commands run
-
-- Search within changed files
-
-- View diffs for linked git worktrees via **Change Worktree...**, switch back via **Switch to Working Tree**
-- Optional commits panel to restrict the comparison to a subset of commits
-
-## Location
-
-By default, the tree view is located in its own container accessible from the activity bar on the left. However, it can be freely moved to any other location like Source Control or Explorer by dragging and dropping.
-
-<img src="screenshots/move-view.gif" alt="Moving of Git Tree Compare view between containers" width="256" />
-
-## Git worktrees
-
-If you use [git worktrees](https://git-scm.com/docs/git-worktree), you can switch the tree view to another linked worktree with **Change Worktree...** from the view title bar. To return to your workspace checkout, use **Switch to Working Tree**. It appears as a dedicated button whenever you're viewing a different worktree, and as the first option in the **Change Worktree...** menu.
-
-The worktree does not have to be part of your workspace, as long as git reports it as a linked worktree of the current repository.
-
-When the view shows a node per repository (`multiRepositoryView` with more than one repository in the workspace), use **Change Worktree...** from a repository node's context menu. Each repository node keeps its place in the tree and shows the selected worktree, with the worktree name next to the repository name.
-
-## Compare GitHub Pull Requests
-
-You can quickly view GitHub PR changes directly in VS Code using the **Compare GitHub Pull Request** command:
-
-1. Click the "..." menu button in the Git Tree Compare view title bar
-2. Select **Compare GitHub Pull Request...**
-3. Enter the GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`)
-4. Authenticate with GitHub if prompted (uses VS Code's built-in GitHub authentication)
-5. The extension will:
-   - Fetch the PR's head commit
-   - Checkout the PR branch as `pr/<number>/<headOwner>/<headRefName>`
-   - Compare it against the PR's base branch
-   - Display all changes in the tree view
-
-This feature works with both PRs from the same repository and PRs from forks.
-
-## Commits panel
-
-Enable `gitTreeCompare.showCommitsPanel` to show a **Commits** panel below the tree. It lists
-the commits between the comparison base and `HEAD`, newest first, with an **Uncommitted Changes**
-entry on top.
-
-Unchecking entries restricts the tree to the changes introduced by the remaining ones. The
-selection always covers a contiguous range of the timeline, since a range diff cannot leave out
-intermediate commits: unchecking something in the middle snaps the rest of the selection to a
-contiguous block.
-
-While a subset is selected, the tree compares two commits rather than the working tree, so
-discarding changes is unavailable until the full comparison is restored.
-
-The panel follows the repository selected in the tree, and its selection resets whenever the
-comparison changes (a new base, or new commits on `HEAD`).
-
-## Reviewing changes
-
-Enable `gitTreeCompare.showCheckboxes` to track reviewed files. Reviews survive
-restarts, filtering, branch switches and rebases. The extension remembers the
-**last explicitly approved fingerprint** for each repository, branch and file;
-changes only affect whether that fingerprint currently matches. Checking a new
-version replaces the approval, and explicitly unchecking clears it. Folder
-checkboxes apply to all changed descendants, including collapsed children.
-
-Fingerprints cover both sides of the comparison: exact file bytes, paths, Git
-modes, symlink targets and submodule commits. Unrelated commits and timestamp-only
-changes do not invalidate a review. Dirty or uninitialized submodules remain
-unchecked until their changes are committed and their checkout is available. A different commit selection or comparison
-base can legitimately show a file unchecked. Unsaved editor changes invalidate
-checks immediately; save before marking a file reviewed. Restoring exactly the
-approved comparison restores its check. “Hide reviewed files” reveals files again
-when they change.
-
-Progress is stored in VS Code extension storage, outside settings.json and Git.
-When Settings Sync is enabled, review records are included. Clones and worktrees
-with the same normalized `origin` URL and branch share progress; SSH and HTTPS
-URLs match, while forks remain distinct. Repositories without a network `origin`
-use local-only storage, shared between their linked worktrees. Detached HEAD
-reviews are scoped to that commit. Renaming a branch or changing origin starts a
-separate review identity; old records are retained.
-
-Sync transfers hashed repository/branch/path keys, fingerprints and update
-metadata, not file contents or remote credentials. Per-record timestamps merge
-updates and preserve explicit unchecks; sync is eventual, not live collaboration,
-and relies on reasonably accurate device clocks. Every machine validates its
-own contents before displaying a synced check. Checkout transformations such as
-CRLF conversion may conservatively require re-review. Remote extension hosts
-use the storage and sync availability provided by that VS Code environment.
-
-### Reduce review noise
-
-Check in `.gitattributes` rules to apply a policy to the Git repository regardless
-of which workspace folder is open:
+Add rules to the repository's `.gitattributes`:
 
 ```gitattributes
+# Recognized by both GitHub and Git Tree Compare.
 generated/** linguist-generated=true
+
+# Only affects Git Tree Compare; GitHub diffs remain visible.
 vendor/** git-tree-compare-deemphasized=true
 **/*.lock git-tree-compare-deemphasized=true
 ```
 
-Git resolves these rules, including nested `.gitattributes`, global attributes
-and `.git/info/attributes`. Bare attributes also mean true; `=false` or a leading
-`-` clears that attribute. Use `directory/**`, not `directory/`, for descendants.
-Rules are read from the current checkout even when filtering historical commits.
+Matching files appear gray. Folders containing only matching changes start
+collapsed; mixed folders keep important files visible. You can expand a folder
+at any time, and ordinary refreshes preserve that choice. These rules do not
+mark files reviewed.
 
-Matching files appear gray. Folders whose changed descendants all match start
-collapsed and gray; mixed folders stay expanded unless the global collapsed
-setting is enabled. Manually expanding a folder survives refreshes. These rules
-never hide files or mark them reviewed automatically.
+Git handles nested attribute files and overrides. Use `directory/**` to match
+its contents; `directory/` is not recursive in `.gitattributes`.
 
-For additional patterns, add folder-scoped VS Code settings (which can also be
-checked in as `.vscode/settings.json`):
+You can also add repository-relative globs through VS Code folder settings:
 
 ```json
 {
@@ -161,46 +110,66 @@ checked in as `.vscode/settings.json`):
 }
 ```
 
-Patterns are repository-relative, case-sensitive globs using `/` separators;
-`**` includes nested directories and dotfiles are included. Settings apply per
-VS Code workspace folder; nested repositories do not automatically load their
-own `.vscode/settings.json`. Use attributes for that case. Set
-`respectLinguistGenerated` to false to disable automatic generated-file styling.
+A checked-in `.vscode/settings.json` applies when that directory is a workspace
+folder. Use `.gitattributes` when rules must follow a Git repository regardless
+of how its parent or subfolders are opened. [More about matching rules](docs/REVIEWING.md#reduce-review-noise).
 
-Local files also offer **Open Containing Folder** in their context menu. The
-command opens the desktop file manager; it is unavailable for remote-only or
-missing files.
+## Commits, worktrees and GitHub pull requests
 
-## Settings
+**Commits panel:** enable `gitTreeCompare.showCommitsPanel` to select a contiguous
+range of commits, optionally including uncommitted changes. These selection
+checkboxes filter the comparison; file checkboxes track review progress. A
+historical comparison disables discard actions.
 
-`gitTreeCompare.diffMode` Determines how the comparison is performed, either by computing a merge base commit first and then comparing against that (equivalent to pull request diffs, default), or by comparing directly to the given base (useful to see the exact diff).
+**Worktrees:** use **Change Worktree…** to compare another linked checkout without
+adding it to the workspace. **Switch to Working Tree** returns to the workspace
+checkout. With `multiRepositoryView` enabled, each repository node has its own
+worktree selector.
 
-`gitTreeCompare.autoRefresh` Controls automatic Git diff refresh. Disable it to reduce work in large repositories, and use Refresh to update the list of changed files. Review validation remains enabled. VS Code watchers cover linked worktrees and repository files outside an opened subfolder; startup, focus and manual refresh catch missed events. Background refresh waits until the comparison view is visible and VS Code is focused.
+**GitHub pull requests:** choose **Compare GitHub Pull Request…** from the view
+menu, enter the PR URL, and authenticate when prompted. This fetches the PR and
+checks out a local branch before comparing it with its base. The command requires
+a clean working tree.
 
-`gitTreeCompare.findRenames` Option to turn off rename detection when invoking `git diff`. Leaving this option on may have a performance impact for large diffs, especially when `autoRefresh` is enabled.
+## Useful settings
 
-`gitTreeCompare.openChanges` Option which decides what should happen when clicking on a file in the tree - either open the changes, or the file itself. Default is to open the changes. The other action can always be accessed via the file's context menu.
+Find all settings by searching for `gitTreeCompare` in VS Code Settings.
 
-`gitTreeCompare.root` Determines what the tree root should be when the workspace folder is not the same as the repository root. Default is to make the workspace folder the tree root. Any changes outside the workspace folder are then displayed in a special `/` node.
+| Setting (`gitTreeCompare.…`) | Default | Purpose |
+| --- | --- | --- |
+| `showCheckboxes` | `false` | Track reviewed files and folders. |
+| `showCommitsPanel` | `false` | Filter changes by a contiguous commit range. |
+| `deemphasizedPaths` | `[]` | Additional globs for gray files and collapsed folders. |
+| `respectLinguistGenerated` | `true` | Recognize generated-file attributes. |
+| `diffMode` | `merge` | Compare against the common ancestor, or use `full`. |
+| `viewMode` | `tree` | Show folders or a flat `list`. |
+| `iconStyle` | `status` | Use Git status icons or the active `fileTheme`. |
+| `showDiffStats` | `false` | Show insertion and deletion counts. |
+| `multiRepositoryView` | `false` | Show multiple repositories together; experimental. |
+| `autoRefresh` | `true` | Refresh the changed-file list automatically. |
+| `root` | `workspace` | Use the workspace folder or entire `repository` as the root. |
+| `compactFolders` | `true` | Combine folders with a single child. |
+| `collapsed` | `false` | Start all folders collapsed; reload after changing. |
 
-`gitTreeCompare.includeFilesOutsideWorkspaceRoot` Determines whether to display the special `/` node when the tree root is not the repository root and there are changes outside the workspace folder. Default is to display the `/` node.
+Review validation remains active when `autoRefresh` is disabled. Filesystem and
+editor events detect edits; startup, focus and manual refresh catch missed
+changes. The old `resetCheckboxOnFileChange` setting is deprecated because review
+checks now always validate content.
 
-`gitTreeCompare.iconsMinimal` Option which enables a compact icon layout where only files have icons, comparable to the Seti file icon theme.
+## Development
 
-`gitTreeCompare.collapsed` When enabled, shows folders collapsed instead of expanded. NOTE: Changing this option requires restarting VS Code.
+```sh
+cli/bin/run check     # Type checking and fast regression tests
+cli/bin/run verify    # Build, extension-host tests, packaged UI tests and audit
+```
 
-`gitTreeCompare.compactFolders` When enabled, compacts (flattens) single-child folders into a single tree element. Useful for Java package structures, for example. May have a performance impact for large diff trees.
+The pinned Nix/devenv environment includes Safe Chain dependency protection.
+Direnv is optional. Automated Linux editor tests run on a private Xvfb display.
 
-`gitTreeCompare.showCheckboxes` When enabled, shows checkboxes next to files and folders, allowing you to tick off items, for example when reviewing changes.
+- [Development, testing and distribution](docs/DEVELOPMENT.md)
+- [Review behavior and repository rules](docs/REVIEWING.md)
+- [Security review](docs/SECURITY-REVIEW.md)
+- [Changelog](CHANGELOG.md)
 
-`gitTreeCompare.resetCheckboxOnFileChange` Deprecated: review checkboxes now always validate content. This setting no longer changes behavior.
-
-`gitTreeCompare.viewMode` Determines whether changed files are shown as a folder tree (`tree`, default) or as a flat list (`list`). The "View as List" and "View as Tree" actions in the tree menu update this setting, so the chosen view is remembered across restarts.
-
-`gitTreeCompare.refSortOrder` Determines how refs (branches, tags) are sorted when changing the comparison base. Default is `committerdate` which sorts by most recently committed first, making it easy to find recently-used branches. Can be set to `alphabetically` for alphabetical sorting.
-
-`gitTreeCompare.openChangesWithDifftool` When enabled, adds an "Open Changes with Difftool" command to the context menu for files. This command opens the changes in the external diff tool configured in Git (e.g., via `git config diff.tool <tool-name>`). Default is disabled. Note: This requires you to have a difftool configured in your Git settings.
-
-`gitTreeCompare.showDiffStats` When enabled, shows insertion/deletion counts (+N -N) next to each file name in the tree view. Default is disabled.
-
-`gitTreeCompare.multiRepositoryView` [EXPERIMENTAL] When enabled and the workspace contains more than one Git repository, the tree shows one expanded section per repository instead of comparing a single active repository. Each repository keeps its own comparison base, filter and checkbox state. Workspaces with a single repository are unaffected. Default is disabled.
+Based on [Git Tree Compare by Maik Riechert](https://github.com/letmaik/vscode-git-tree-compare).
+Licensed under the [MIT License](LICENSE).

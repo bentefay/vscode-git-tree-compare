@@ -5,9 +5,9 @@
 * Add Open Containing Folder for existing local files.
 
 * Add a pinned devenv/direnv/Nix toolchain, Safe Chain dependency protection and agent verification loop.
-* Add CLI commands to package, publish GitHub releases and install the fork locally.
+* Add CLI commands to package, publish GitHub releases and install the extension locally.
 * Harden Git revision/path handling, shallow-history fetching, PR cleanliness checks and file statistics.
-* Require Workspace Trust and use the fork extension ID `bentefay.git-tree-compare`.
+* Require Workspace Trust and use the extension ID `bentefay.git-tree-compare`.
 
 * Remember the tree/list view mode across restarts via the new `viewMode` setting [#162](https://github.com/letmaik/vscode-git-tree-compare/issues/162)
 

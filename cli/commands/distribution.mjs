@@ -56,7 +56,7 @@ export class ReleaseCommand extends Command {
 
 export class InstallCommand extends Command {
     static paths = [['install']];
-    static usage = Command.Usage({ description: 'Build and install this fork into local VS Code, or install --vsix PATH.' });
+    static usage = Command.Usage({ description: 'Build and install this extension into local VS Code, or install --vsix PATH.' });
     vsix = Option.String('--vsix');
     code = Option.String('--code', 'code');
     profile = Option.String('--profile');

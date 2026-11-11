@@ -37,7 +37,7 @@ Cosmos's Bun runtime. Cosmos's older Node version was not copied.
 | `dependencies verify` | Malware blocking probe, fresh-cache locked install and audit in a disposable directory |
 | `package` | Production VSIX and SHA-256 in `artifacts/` |
 | `release --tag TAG` | Full verification, then a new GitHub release with VSIX and checksum |
-| `install` | Build and install the fork into local VS Code |
+| `install` | Build and install the extension into local VS Code |
 
 After direnv loads, `run` is shorthand for `cli/bin/run`. Use `--help` on any
 command. The wrapper remembers the invocation directory, so relative `--vsix`
@@ -46,11 +46,11 @@ paths work even when invoked outside the repository.
 ## Build and publish to GitHub
 
 Update the extension version and changelog, commit, and push the intended commit
-to this fork. Authenticate `gh` yourself. Preview the destination and arguments:
+to this repository. Authenticate `gh` yourself. Preview the destination and arguments:
 
 ```sh
-cli/bin/run release --tag v1.21.0-ben.1 --draft --dry-run
-cli/bin/run release --tag v1.21.0-ben.1 --draft
+cli/bin/run release --tag v1.22.0 --draft --dry-run
+cli/bin/run release --tag v1.22.0 --draft
 ```
 
 Omit `--draft` for a public release. The command derives the destination from
@@ -74,7 +74,7 @@ The default executable is `code`. `--vsix` installs an already built artifact;
 otherwise the command builds first. Identity and package contents are checked
 before installation. `--force` explicitly allows replacement. Reload VS Code
 when prompted. Disable the upstream extension in the selected profile: the
-fork has its own extension ID but shares command, view and setting identifiers.
+extension has its own publisher ID but shares command, view and setting identifiers.
 
 ## Agent feedback loop
 
