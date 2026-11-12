@@ -93,6 +93,7 @@ export async function activate(context: ExtensionContext) {
     });
 
     register(NAMESPACE + '.openContainingFolder', node => provider!.openContainingFolder(node));
+    register(NAMESPACE + '.openChangesSinceReview', node => provider!.openChangesSinceReview(node));
 
     register(NAMESPACE + '.openFile', (node, nodes) => {
         return provider!.openFile(nodes || [node]);

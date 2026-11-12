@@ -24,13 +24,49 @@ use local-only storage, shared between their linked worktrees. Detached HEAD
 reviews are scoped to that commit. Renaming a branch or changing origin starts a
 separate review identity; old records are retained.
 
-Sync transfers hashed repository/branch/path keys, fingerprints and update
+Sync transfers hashed repository/branch/path keys, fingerprints, reviewed commit IDs and update
 metadata, not file contents or remote credentials. Per-record timestamps merge
 updates and preserve explicit unchecks; sync is eventual, not live collaboration,
 and relies on reasonably accurate device clocks. Every machine validates its
 own contents before displaying a synced check. Checkout transformations such as
 CRLF conversion may conservatively require re-review. Remote extension hosts
 use the storage and sync availability provided by that VS Code environment.
+
+## Changes since your last approval
+
+A file whose comparison no longer matches its approval appears purple with a
+**Changed since last review** tooltip. This colour takes precedence over generated
+file dimming. **View Diff Since Last Reviewed** appears beside **Open File** and
+**Discard Changes**, and in the file's context menu, when a commit baseline exists.
+It opens VS Code's normal diff editor with the recorded commit on the left and
+the working file on the right. Historical commit filters use the selected right
+commit instead. Checking the file again replaces its fingerprint and baseline;
+explicitly unchecking clears both. Restoring approved contents clears the colour.
+
+For working-tree reviews the baseline is HEAD at approval time. For a historical
+comparison it is the selected right commit. No file snapshots or extra Git commits
+are created. Uncommitted changes that existed when you approved are also included
+in the incremental diff; files absent at the recorded commit appear entirely
+added. A changed PR base can require re-review while this incremental diff is
+empty, since approval fingerprints cover both comparison sides. Renamed paths
+have a separate review key, as before.
+
+Commit baselines survive restarts, filters and branch switches, and sync with
+review progress. Older approvals retain their checks and colour behaviour but
+have no recorded baseline until approved again. If the commit is missing in a
+different clone or was garbage-collected after a rebase, the action explains that
+it is unavailable; it never silently substitutes HEAD or fetches automatically.
+
+A small local index of reviewed paths keeps complete reverts visible in the full
+comparison, even when they no longer differ from the PR base. These paths are not
+synced; another machine can only retain paths indexed by its own approvals.
+Explicit commit filters still limit the tree to their selected diff. After you
+approve a complete revert, the next refresh removes it from the tree.
+
+Customize the colour using `gitTreeCompare.changedSinceReviewForeground` inside
+VS Code's `workbench.colorCustomizations` setting. Binary files and submodules
+retain their usual VS Code limitations; the incremental action is for files,
+not submodule directories.
 
 ## Reduce review noise
 

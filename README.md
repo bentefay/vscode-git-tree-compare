@@ -6,6 +6,7 @@ when an agent keeps editing files in the background.
 
 - Preview branch and pull-request changes, with optional commit-range filtering.
 - Keep review checkboxes across restarts, branch switches and rebases.
+- Highlight files changed since approval and compare them with the last reviewed commit.
 - Sync review progress between machines using VS Code Settings Sync.
 - Dim generated files and collapse less important folders using repository rules.
 - Compare linked Git worktrees and multiple repositories.
@@ -73,6 +74,16 @@ explicitly unchecking clears the approval.
 Fingerprints include both sides of the comparison, so a changed base can require
 re-review even if your file is unchanged. Unsaved editor changes also invalidate
 checks; save before approving a file.
+
+Files changed since approval turn purple. **View Diff Since Last Reviewed**,
+beside the file's other actions and in its context menu, opens **Last reviewed
+commit ↔ Working tree** in VS Code's normal diff editor. Approving again updates
+the baseline and clears the highlight. The colour can be customized with
+`gitTreeCompare.changedSinceReviewForeground` in `workbench.colorCustomizations`.
+
+The baseline is the commit at approval time, not a snapshot of uncommitted
+contents. Any edits already uncommitted when you approved are also included in
+this diff. Existing approvals need a new approval to record a commit baseline.
 
 Progress lives in VS Code extension storage and participates in Settings Sync.
 Clones with the same normalized `origin` URL and branch share progress; each

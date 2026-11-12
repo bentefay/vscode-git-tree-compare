@@ -359,6 +359,115 @@ describe('Repository review workflow', () => {
         await mark(node);
         assert.ok(provider.reviewStore.get(comparison.keyForReview(node)).fingerprint);
     });
+
+    it('highlights re-review and opens the saved commit against current contents, then advances approval', async () => {
+        const file = path.join(root, 'incremental-review.txt');
+        await fs.writeFile(file, 'approved commit\n');
+        git('add', '--', file); git('commit', '-m', 'Review baseline');
+        const baseline = git('rev-parse', 'HEAD');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        const node = await find(file);
+        await mark(node);
+        const key = comparison.keyForReview(node);
+        assert.equal(provider.reviewStore.get(key).commit, baseline);
+        await fs.writeFile(file, 'agent follow-up\n');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        await eventually(() => provider.getTreeItem(node).resourceUri?.fragment === 'review-changed');
+        assert.equal(checked(node), false);
+        assert.equal(provider.getTreeItem(node).resourceUri.fragment, 'review-changed');
+        assert.equal(provider.getTreeItem(node).contextValue, 'file-local-review-changed');
+        await vscode.commands.executeCommand('gitTreeCompare.openChangesSinceReview', node);
+        const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+        assert.ok(tab.input instanceof vscode.TabInputTextDiff);
+        assert.match(tab.label, /Last reviewed commit/);
+        assert.equal(JSON.parse(tab.input.original.query).ref, baseline);
+        assert.equal((await vscode.workspace.openTextDocument(tab.input.original)).getText(), 'approved commit\n');
+        assert.equal((await vscode.workspace.openTextDocument(tab.input.modified)).getText(), 'agent follow-up\n');
+        git('add', '--', file); git('commit', '-m', 'Agent follow-up');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        await mark(node);
+        assert.equal(provider.reviewStore.get(key).commit, git('rev-parse', 'HEAD'));
+        assert.equal(checked(node), true);
+        assert.notEqual(provider.getTreeItem(node).resourceUri?.fragment, 'review-changed');
+        assert.equal(provider.getTreeItem(node).contextValue, 'file-local');
+        await mark(node, vscode.TreeItemCheckboxState.Unchecked);
+        assert.equal(provider.reviewStore.get(key).commit, undefined);
+        assert.notEqual(provider.getTreeItem(node).resourceUri?.fragment, 'review-changed');
+    });
+
+    it('handles added and deleted files, historical filters, and unavailable baselines without substituting HEAD', async () => {
+        const file = path.join(root, 'incremental-review.txt');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        const node = await find(file);
+        await mark(node);
+        const record = provider.reviewStore.get(comparison.keyForReview(node));
+        await fs.unlink(file);
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        await provider.openChangesSinceReview(await find(file));
+        let input = vscode.window.tabGroups.activeTabGroup.activeTab.input;
+        assert.ok(input instanceof vscode.TabInputTextDiff);
+        assert.equal((await vscode.workspace.openTextDocument(input.original)).getText(), 'agent follow-up\n');
+        assert.equal((await vscode.workspace.openTextDocument(input.modified)).getText(), '');
+        await fs.writeFile(file, 'agent follow-up\n');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+
+        const untracked = path.join(root, 'review-restart.txt');
+        const added = await find(untracked);
+        await mark(added);
+        await fs.writeFile(untracked, 'more edits to an uncommitted addition\n');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        await provider.openChangesSinceReview(await find(untracked));
+        input = vscode.window.tabGroups.activeTabGroup.activeTab.input;
+        assert.equal((await vscode.workspace.openTextDocument(input.original)).getText(), '');
+        assert.equal((await vscode.workspace.openTextDocument(input.modified)).getText(), 'more edits to an uncommitted addition\n');
+
+        const historical = git('rev-parse', 'HEAD~1');
+        await provider.setCommitFilter({ kind: 'range', leftRef: git('rev-parse', 'origin/main'), rightRef: historical });
+        const filtered = await find(file);
+        await mark(filtered);
+        assert.equal(provider.reviewStore.get(comparison.keyForReview(filtered)).commit, historical);
+        await provider.openChangesSinceReview(filtered);
+        input = vscode.window.tabGroups.activeTabGroup.activeTab.input;
+        assert.equal(JSON.parse(input.modified.query).ref, historical);
+        await provider.setCommitFilter({ kind: 'all' });
+
+        const originalWarning = vscode.window.showWarningMessage;
+        const originalCommand = vscode.commands.executeCommand;
+        let warning, opened = false;
+        try {
+            await provider.reviewStore.setMany([{ key: comparison.keyForReview(node), fingerprint: record.fingerprint, commit: 'f'.repeat(40) }]);
+            vscode.window.showWarningMessage = async message => { warning = message; };
+            vscode.commands.executeCommand = async (command, ...args) => {
+                if (command === 'vscode.diff') { opened = true; return; }
+                return originalCommand(command, ...args);
+            };
+            await provider.openChangesSinceReview(node);
+            assert.match(warning, /unavailable/);
+            assert.equal(opened, false);
+        } finally {
+            vscode.window.showWarningMessage = originalWarning;
+            vscode.commands.executeCommand = originalCommand;
+            await provider.reviewStore.setMany([{ key: comparison.keyForReview(node), fingerprint: record.fingerprint, commit: record.commit }]);
+        }
+    });
+
+    it('keeps locally reviewed files visible when an edit completely reverts the PR change', async () => {
+        const file = path.join(root, 'other.txt');
+        await fs.writeFile(file, 'review this change\n');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        await mark(await find(file));
+        assert.deepEqual(provider.reviewStore.paths()[comparison.keyForReview(await find(file))], { source: 'other.txt', destination: 'other.txt' });
+        await fs.writeFile(file, 'keep me\n');
+        assert.equal(git('diff', 'origin/main', '--', file), '');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        const reverted = await find(file);
+        assert.ok(reverted, 'A complete revert still needs review');
+        await eventually(() => provider.getTreeItem(reverted).resourceUri?.fragment === 'review-changed');
+        assert.equal(provider.getTreeItem(reverted).resourceUri.fragment, 'review-changed');
+        await mark(reverted);
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        assert.equal(await find(file), undefined, 'An approved revert can leave the tree');
+    });
 });
 
 describe('Orca inline review comments', () => {

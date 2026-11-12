@@ -7,6 +7,7 @@ const { execFile, spawn } = require('node:child_process');
 const { ReviewStore, REVIEW_SYNC_KEY, remoteIdentity, reviewKey, sha256 } = require('../../out/reviewState');
 const { ReviewFingerprinter } = require('../../out/reviewFingerprint');
 const { deemphasizedPaths } = require('../../out/reviewRules');
+const { resolveReviewCommit, reviewFileExists } = require('../../out/reviewDiff');
 
 class Memory {
     data = new Map();
@@ -49,6 +50,46 @@ test('portable repository keys strip credentials and transport, distinguish fork
     assert.equal(remoteIdentity('C:\\work\\repo'), undefined);
     assert.notEqual(reviewKey('repo', 'one', 'file', true), reviewKey('repo', 'two', 'file', true));
     assert.notEqual(reviewKey('repo', 'one', 'file', true), reviewKey('another', 'one', 'file', true));
+});
+
+test('commit baselines sync with approvals while paths stay local and legacy records remain valid', async () => {
+    const storage = new Memory(), store = new ReviewStore(storage);
+    const key = reviewKey('host/repo', 'feature', 'file', true);
+    const commit = 'a'.repeat(40);
+    await store.setMany([{ key, fingerprint: sha256('approval'), commit, path: { source: 'file', destination: 'file' } }]);
+    assert.equal(new ReviewStore(storage).get(key).commit, commit);
+    assert.deepEqual(new ReviewStore(storage).paths()[key], { source: 'file', destination: 'file' });
+    await storage.update('reviews.v1.paths', {}); // delayed Memento echo
+    assert.deepEqual(store.paths()[key], { source: 'file', destination: 'file' });
+    const remote = new Memory();
+    await remote.update(REVIEW_SYNC_KEY, storage.get(REVIEW_SYNC_KEY));
+    const synced = new ReviewStore(remote);
+    assert.equal(synced.get(key).commit, commit);
+    assert.deepEqual(synced.paths(), {});
+    await store.setMany([{ key, fingerprint: sha256('legacy') }]);
+    assert.equal(store.get(key).fingerprint, sha256('legacy'));
+    assert.equal(store.get(key).commit, undefined);
+    await store.setMany([{ key, fingerprint: sha256('invalid'), commit: '--output=oops' }]);
+    assert.equal(store.get(key).commit, undefined);
+    await store.setMany([{ key, fingerprint: null, commit }]);
+    assert.equal(store.get(key).commit, undefined);
+    assert.equal(store.paths()[key], undefined);
+});
+
+test('review diffs resolve immutable commits and distinguish absent literal paths from missing objects', async t => {
+    const repo = await fixture(t);
+    const commit = await resolveReviewCommit(repo, 'HEAD');
+    assert.match(commit, /^[a-f0-9]{40}$/);
+    assert.equal(await reviewFileExists(repo, commit, path.join(repo.root, '*.txt')), true);
+    assert.equal(await reviewFileExists(repo, commit, path.join(repo.root, '*')), false);
+    assert.equal(await reviewFileExists(repo, commit, path.join(repo.root, 'new.txt')), false);
+    await assert.rejects(resolveReviewCommit(repo, 'f'.repeat(40)));
+    await assert.rejects(resolveReviewCommit(repo, '--output=oops'));
+    await assert.rejects(reviewFileExists(repo, commit, path.join(repo.root, '../outside')));
+    await repo.exec(['rm', '--', 'ordinary.txt']);
+    await repo.exec(['commit', '-m', 'Delete']);
+    assert.equal(await reviewFileExists(repo, commit, path.join(repo.root, 'ordinary.txt')), true);
+    assert.equal(await reviewFileExists(repo, await resolveReviewCommit(repo, 'HEAD'), path.join(repo.root, 'ordinary.txt')), false);
 });
 
 async function fixture(t) {

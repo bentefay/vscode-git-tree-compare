@@ -113,6 +113,12 @@
                 "category": "Git Tree Compare"
             },
             {
+                "command": "gitTreeCompare.openChangesSinceReview",
+                "title": "View Diff Since Last Reviewed",
+                "icon": "$(history)",
+                "category": "Git Tree Compare"
+            },
+            {
                 "command": "gitTreeCompare.openFile",
                 "title": "Open File",
                 "icon": "$(go-to-file)",
@@ -612,17 +618,17 @@
                 },
                 {
                     "command": "gitTreeCompare.openChanges",
-                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?$/ && !config.gitTreeCompare.openChanges",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?(?:-review-changed)?$/ && !config.gitTreeCompare.openChanges",
                     "group": "inline"
                 },
                 {
                     "command": "gitTreeCompare.openFile",
-                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?$/ && config.gitTreeCompare.openChanges",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?(?:-review-changed)?$/ && config.gitTreeCompare.openChanges",
                     "group": "inline"
                 },
                 {
                     "command": "gitTreeCompare.discardChanges",
-                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?$/",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?(?:-review-changed)?$/",
                     "group": "inline"
                 },
                 {
@@ -637,17 +643,17 @@
                 },
                 {
                     "command": "gitTreeCompare.openChanges",
-                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?$/ && !config.gitTreeCompare.openChanges",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?(?:-review-changed)?$/ && !config.gitTreeCompare.openChanges",
                     "group": "1_open"
                 },
                 {
                     "command": "gitTreeCompare.openFile",
-                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?$/ && config.gitTreeCompare.openChanges",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?(?:-review-changed)?$/ && config.gitTreeCompare.openChanges",
                     "group": "1_open"
                 },
                 {
                     "command": "gitTreeCompare.discardChanges",
-                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?$/",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?(?:-review-changed)?$/",
                     "group": "2_discard"
                 },
                 {
@@ -722,12 +728,12 @@
                 },
                 {
                     "command": "gitTreeCompare.copyPath",
-                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?$/",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?(?:-review-changed)?$/",
                     "group": "3_copy"
                 },
                 {
                     "command": "gitTreeCompare.copyRelativePath",
-                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?$/",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?(?:-review-changed)?$/",
                     "group": "3_copy"
                 },
                 {
@@ -737,13 +743,23 @@
                 },
                 {
                     "command": "gitTreeCompare.openChangesWithDifftool",
-                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?$/ && config.gitTreeCompare.openChangesWithDifftool",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?(?:-review-changed)?$/ && config.gitTreeCompare.openChangesWithDifftool",
                     "group": "1_open"
                 },
                 {
                     "command": "gitTreeCompare.openContainingFolder",
-                    "when": "view == gitTreeCompare && viewItem == file-local",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file-local(?:-review-changed)?$/",
                     "group": "1_open@3"
+                },
+                {
+                    "command": "gitTreeCompare.openChangesSinceReview",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?-review-changed$/",
+                    "group": "inline"
+                },
+                {
+                    "command": "gitTreeCompare.openChangesSinceReview",
+                    "when": "view == gitTreeCompare && viewItem =~ /^file(?:-local)?-review-changed$/",
+                    "group": "1_open"
                 }
             ],
             "comments/commentThread/context": [
@@ -973,7 +989,19 @@
                     "description": "Path to the Orca CLI executable (no arguments). Empty uses ORCA_CLI_COMMAND or platform discovery (orca-ide on Linux). Requires a local terminal agent; native chat tabs are not supported yet."
                 }
             }
-        }
+        },
+        "colors": [
+            {
+                "id": "gitTreeCompare.changedSinceReviewForeground",
+                "description": "Files whose comparison has changed since their last approval.",
+                "defaults": {
+                    "dark": "#DFA5FF",
+                    "light": "#803BB5",
+                    "highContrast": "#FFB8FF",
+                    "highContrastLight": "#702080"
+                }
+            }
+        ]
     },
     "scripts": {
         "vscode:prepublish": "webpack --mode production",

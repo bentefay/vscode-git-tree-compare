@@ -24,9 +24,10 @@ import { throttle } from './git/decorators'
 import { normalizePath } from './fsUtils';
 import { API as GitAPI, Repository as GitAPIRepository } from './typings/git';
 import { Octokit } from '@octokit/rest';
-import { ReviewStore, remoteIdentity, reviewKey } from './reviewState';
+import { ReviewStore, ReviewUpdate, remoteIdentity, reviewKey } from './reviewState';
 import { ReviewFingerprinter, boundedMap } from './reviewFingerprint';
 import { deemphasizedPaths } from './reviewRules';
+import { EMPTY_REVIEW_SCHEME, resolveReviewCommit, reviewFileExists } from './reviewDiff';
 
 
 type SortOrder = 'name' | 'path' | 'status' | 'recentlyModified';
@@ -48,6 +49,7 @@ const STATUS_SORT_ORDER: { [key: string]: number } = {
 
 interface CheckboxStateInfo {
     state: TreeItemCheckboxState;
+    changedSinceReview?: boolean;
 }
 
 class FileElement implements IDiffStatus {
@@ -193,9 +195,18 @@ class RepositoryComparison {
             d.uri.scheme === 'file' && normalizePath(d.uri.fsPath) === normalizePath(file) && d.isDirty);
     }
 
+    changedSinceReview(file: IDiffStatus): boolean {
+        return this.checkboxStates.get(file.dstAbsPath)?.changedSinceReview === true ||
+            (this.isDirty(file.dstAbsPath) && !!this.host.reviewStore.get(this.keyForReview(file))?.fingerprint);
+    }
+
     invalidateReviews(file?: string): void {
         this.reviewEpoch++;
-        if (file) { this.checkboxStates.delete(file); }
+        if (file) {
+            // A second edit does not make an already changed approval unknown.
+            // Keep its colour until validation proves it matches again.
+            if (!this.checkboxStates.get(file)?.changedSinceReview) { this.checkboxStates.delete(file); }
+        }
         else { this.checkboxStates.clear(); }
     }
 
@@ -225,7 +236,7 @@ class RepositoryComparison {
         try { context = await this.fingerprintContext(); }
         catch (error) { this.invalidateReviews(); throw error; }
         const checked = await boundedMap(candidates, async file => {
-            if (this.isDirty(file.dstAbsPath)) { return undefined; }
+            if (this.isDirty(file.dstAbsPath)) { return { file, fingerprint: undefined }; }
             try {
                 const fingerprint = await this.fingerprinter.fingerprint(file, context.left, context.right, context.fileMode);
                 return { file, fingerprint };
@@ -237,19 +248,24 @@ class RepositoryComparison {
         if (epoch !== this.reviewEpoch || signature !== JSON.stringify([this.headName, this.headCommit, this.getDiffEndpoints()])) { return; }
         const current = this.host.reviewStore.snapshot();
         for (const result of checked) {
-            if (result && current[this.keyForReview(result.file)]?.fingerprint === result.fingerprint && !this.isDirty(result.file.dstAbsPath)) {
-                nextStates.set(result.file.dstAbsPath, { state: TreeItemCheckboxState.Checked });
+            if (result && current[this.keyForReview(result.file)]?.fingerprint) {
+                const matches = current[this.keyForReview(result.file)].fingerprint === result.fingerprint && !this.isDirty(result.file.dstAbsPath);
+                nextStates.set(result.file.dstAbsPath, { state: matches ? TreeItemCheckboxState.Checked : TreeItemCheckboxState.Unchecked,
+                    changedSinceReview: !matches });
             }
         }
         this.checkboxStates = nextStates;
     }
 
-    private async updateReviewMetadata(diff: IDiffStatus[]): Promise<void> {
+    private async updateReviewIdentity(): Promise<void> {
         const origin = await this.repository.exec(['config', '--get', 'remote.origin.url'], { log: false })
             .catch((e: any) => { if (e.exitCode === 1) { return { stdout: '' }; } throw e; });
         const remote = remoteIdentity(origin.stdout);
         this.syncReviews = remote !== undefined;
         this.reviewIdentity = remote ?? `${env.remoteName ?? 'local'}:${this.commonGitDir}`;
+    }
+
+    private async updateReviewMetadata(diff: IDiffStatus[]): Promise<void> {
         const config = workspace.getConfiguration(NAMESPACE, Uri.file(this.repoRoot));
         const paths = diff.map(file => path.relative(this.repoRoot, file.dstAbsPath).split(path.sep).join('/'));
         try {
@@ -515,6 +531,32 @@ class RepositoryComparison {
             renameThreshold, omitUntrackedFiles, omitUnstagedChanges, showDiffStats);
     }
 
+    private async includeReviewedReverts(diff: IDiffStatus[]): Promise<void> {
+        // Explicit commit filters retain their normal scope. The full working
+        // tree includes previously reviewed paths even if reverted out of the PR.
+        if (this.commitFilter.kind !== 'all') { return; }
+        const present = new Set(diff.map(file => file.dstAbsPath));
+        const records = this.host.reviewStore.snapshot();
+        const candidates: IDiffStatus[] = [];
+        for (const [key, paths] of Object.entries(this.host.reviewStore.paths())) {
+            const file: IDiffStatus = { srcAbsPath: path.join(this.repoRoot, paths.source),
+                dstAbsPath: path.join(this.repoRoot, paths.destination),
+                status: 'M', isSubmodule: false, stats: undefined };
+            if (!present.has(file.dstAbsPath) && records[key]?.fingerprint && this.keyForReview(file) === key) { candidates.push(file); }
+        }
+        if (!candidates.length) { return; }
+        const context = await this.fingerprintContext();
+        const retained = await boundedMap(candidates, async file => {
+            try {
+                const fingerprint = await this.fingerprinter.fingerprint(file, context.left, context.right, context.fileMode);
+                try { await fs.promises.lstat(file.dstAbsPath); }
+                catch (error: any) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) { file.status = 'D'; } else { throw error; } }
+                return this.isDirty(file.dstAbsPath) || records[this.keyForReview(file)].fingerprint !== fingerprint ? file : undefined;
+            } catch (error: any) { this.host.log(`Could not validate reverted review: ${file.dstAbsPath}`, error); return undefined; }
+        });
+        diff.push(...retained.filter((file): file is IDiffStatus => file !== undefined));
+    }
+
     @throttle
     async updateDiff(fireChangeEvents: boolean) {
         if (!this.baseRef) {
@@ -525,6 +567,8 @@ class RepositoryComparison {
         const filesOutsideTreeRoot = new Map<FolderAbsPath, IDiffStatus[]>();
 
         const diff = await this.computeDiff();
+        await this.updateReviewIdentity();
+        await this.includeReviewedReverts(diff);
         const untrackedCount = diff.reduce((prev, cur, _) => prev + (cur.status === 'U' ? 1 : 0), 0);
         this.host.log(`${diff.length} diff entries (${untrackedCount} untracked)`);
 
@@ -1092,6 +1136,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         this.disposables.push(workspace.onDidChangeConfiguration(this.handleConfigChange, this));
         this.disposables.push(workspace.onDidChangeWorkspaceFolders(this.handleWorkspaceFoldersChanged, this));
         this.disposables.push(window.registerFileDecorationProvider(new GitTreeCompareFileDecorationProvider()));
+        this.disposables.push(workspace.registerTextDocumentContentProvider(EMPTY_REVIEW_SCHEME, { provideTextDocumentContent: () => '' }));
         this.disposables.push(this.gitApi.onDidOpenRepository(this.handleRepositoryOpened, this));
         this.disposables.push(this.gitApi.onDidCloseRepository(this.handleRepositoryClosed, this));
         for (const repository of this.gitApi.repositories) {
@@ -1748,28 +1793,35 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
                 if (contexts.get(element.repositoryRoot) !== JSON.stringify([comparison.headName, comparison.headCommit, comparison.getDiffEndpoints()])) {
                     continue; // A queued click must not approve a newly selected branch/comparison.
                 }
-                comparison.invalidateReviews();
-                const epoch = comparison.reviewEpoch;
-                const signature = JSON.stringify([comparison.headName, comparison.headCommit, comparison.getDiffEndpoints()]);
                 const files = comparison.reviewFiles().filter(file => element instanceof FileElement
                     ? file.dstAbsPath === element.dstAbsPath
                     : file.dstAbsPath.startsWith(element.dstAbsPath + path.sep));
+                for (const file of files) { comparison.invalidateReviews(file.dstAbsPath); }
+                const epoch = comparison.reviewEpoch;
+                const signature = JSON.stringify([comparison.headName, comparison.headCommit, comparison.getDiffEndpoints()]);
                 const context = state === TreeItemCheckboxState.Checked ? await comparison.fingerprintContext() : undefined;
+                const commit = context ? await resolveReviewCommit(comparison.repository, comparison.getDiffEndpoints().rightRef ?? 'HEAD') : undefined;
+                if (commit && (comparison.getDiffEndpoints().rightRef === null ? commit !== comparison.headCommit
+                    : await comparison.fingerprinter.resolve(commit) !== context!.right)) {
+                    throw new Error('Comparison changed while recording review; refresh and check again.');
+                }
                 let dirty = false;
-                const updates = await boundedMap(files, async file => {
+                const updates = await boundedMap<IDiffStatus, ReviewUpdate | undefined>(files, async file => {
                     const key = comparison.keyForReview(file);
                     if (!context) { return { key, fingerprint: null }; }
                     // Refusing to approve unsaved content must not erase the
                     // previous approval. Only an explicit uncheck does that.
                     if (comparison.isDirty(file.dstAbsPath)) { dirty = true; return undefined; }
                     const fingerprint = await comparison.fingerprinter.fingerprint(file, context.left, context.right, context.fileMode);
-                    return { key, fingerprint };
+                    return { key, fingerprint, commit, path: file.isSubmodule ? undefined : {
+                        source: path.relative(comparison.repoRoot, file.srcAbsPath).split(path.sep).join('/'),
+                        destination: path.relative(comparison.repoRoot, file.dstAbsPath).split(path.sep).join('/') } };
                 });
                 if (epoch !== comparison.reviewEpoch || signature !== JSON.stringify([comparison.headName, comparison.headCommit, comparison.getDiffEndpoints()])) {
                     this.log('Files changed while recording review; please review and check again.');
                     continue;
                 }
-                await this.reviewStore.setMany(updates.filter((update): update is { key: string; fingerprint: string | null } => update !== undefined));
+                await this.reviewStore.setMany(updates.filter((update): update is ReviewUpdate => update !== undefined));
                 await comparison.refreshReviews();
                 if (dirty) { void window.showInformationMessage('Save files before marking them reviewed. Unsaved files remain unchecked.'); }
             }
@@ -1870,6 +1922,14 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             }
             if (element instanceof FileElement && !element.isSubmodule && comparison.localFiles.has(element.dstAbsPath)) {
                 item.contextValue = 'file-local';
+            }
+            if (element instanceof FileElement && comparison.changedSinceReview(element)) {
+                item.resourceUri = toTreeResourceUri(element.dstAbsPath,
+                    this.iconStyle === 'fileTheme' ? element.status : undefined).with({ fragment: 'review-changed' });
+                const record = this.reviewStore.get(comparison.keyForReview(element));
+                item.tooltip = `${item.tooltip ?? element.dstAbsPath} • Changed since last review`;
+                if (record?.commit && !element.isSubmodule) { item.contextValue += '-review-changed'; }
+                else if (!record?.commit) { item.tooltip += ' (approve again to record a commit baseline)'; }
             }
         }
         return item;
@@ -2439,6 +2499,50 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         }
         const { comparison, status } = resolved;
         await this.doOpenChanges(comparison, status.srcAbsPath, status.dstAbsPath, status.status);
+    }
+
+    async openChangesSinceReview(fileEntry?: FileElement): Promise<void> {
+        const resolved = this.resolveFile(fileEntry);
+        if (!resolved || resolved.status.isSubmodule) { return; }
+        const { comparison, status } = resolved;
+        const record = this.reviewStore.get(comparison.keyForReview(status));
+        const signature = JSON.stringify([comparison.headName, comparison.headCommit, comparison.getDiffEndpoints()]);
+        if (!record?.fingerprint || !record.commit) {
+            void window.showInformationMessage('No commit baseline was recorded for this file. Approve it to record one for future reviews.');
+            return;
+        }
+        try {
+            let commit: string;
+            try {
+                commit = await resolveReviewCommit(comparison.repository, record.commit);
+                if (commit !== record.commit) { throw new Error('Review commit did not resolve to its recorded object'); }
+            }
+            catch {
+                void window.showWarningMessage(`The last reviewed commit (${record.commit.slice(0, 8)}) is unavailable in this checkout. Fetch it if available, or review the full diff and approve again.`);
+                return;
+            }
+            const empty = Uri.file(status.dstAbsPath).with({ scheme: EMPTY_REVIEW_SCHEME });
+            const left = await reviewFileExists(comparison.repository, commit, status.dstAbsPath)
+                ? this.gitApi.toGitUri(Uri.file(status.dstAbsPath), commit) : empty;
+            const { rightRef } = comparison.getDiffEndpoints();
+            let right: Uri;
+            if (rightRef === null) {
+                try { await fs.promises.lstat(status.dstAbsPath); right = Uri.file(status.dstAbsPath); }
+                catch (error: any) { if (!['ENOENT', 'ENOTDIR'].includes(error.code)) { throw error; } right = empty; }
+            } else {
+                const rightCommit = await resolveReviewCommit(comparison.repository, rightRef);
+                right = await reviewFileExists(comparison.repository, rightCommit, status.dstAbsPath)
+                    ? this.gitApi.toGitUri(Uri.file(status.dstAbsPath), rightCommit) : empty;
+            }
+            if (signature !== JSON.stringify([comparison.headName, comparison.headCommit, comparison.getDiffEndpoints()])) {
+                throw new Error('The comparison changed while opening the diff. Please try again.');
+            }
+            await commands.executeCommand('vscode.diff', left, right,
+                `${path.basename(status.dstAbsPath)} (Last reviewed commit ${commit.slice(0, 8)} ↔ ${rightRef === null ? 'Working tree' : rightRef.slice(0, 8)})`, { preview: true });
+        } catch (error: any) {
+            this.log('Could not open changes since last review', error);
+            void window.showErrorMessage(`Could not open changes since last review: ${error.message}`);
+        }
     }
 
     async doOpenChanges(comparison: RepositoryComparison, srcAbsPath: string, dstAbsPath: string, status: StatusCode,
@@ -3228,6 +3332,10 @@ function formatDiffStats(stats: IDiffStats): string {
 
 class GitTreeCompareFileDecorationProvider implements FileDecorationProvider {
     provideFileDecoration(uri: Uri): ProviderResult<FileDecoration> {
+        if (uri.scheme === TREE_RESOURCE_SCHEME && uri.fragment === 'review-changed') {
+            return new FileDecoration(isStatusCode(uri.query) ? getStatusBadge(uri.query) : undefined,
+                'Changed since last review', new ThemeColor('gitTreeCompare.changedSinceReviewForeground'));
+        }
         if (uri.scheme === TREE_RESOURCE_SCHEME && uri.fragment === 'deemphasized') {
             return new FileDecoration(isStatusCode(uri.query) ? getStatusBadge(uri.query) : undefined,
                 isStatusCode(uri.query) ? getStatusText(uri.query) : undefined, new ThemeColor('gitDecoration.ignoredResourceForeground'));

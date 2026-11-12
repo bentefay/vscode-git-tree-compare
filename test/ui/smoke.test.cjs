@@ -222,9 +222,34 @@ describe('Packaged VSIX', function () {
         await fs.writeFile(file, 'changed by an agent after review\n');
         await browser.driver.wait(async () => (await checkedState()) === 'false', 15000,
             'An external edit must invalidate the review');
+        const reviewColour = () => browser.driver.executeScript(() => {
+            for (const row of document.querySelectorAll('.customview-tree .monaco-list-row')) {
+                const label = row.querySelector('.label-name');
+                if (label?.textContent === 'example.txt') return getComputedStyle(label).color;
+            }
+            return null;
+        });
+        await browser.driver.wait(async () => (await reviewColour()) === 'rgb(223, 165, 255)', 15000,
+            'A changed approval must have the dedicated review colour');
+        await browser.driver.actions().clear();
+        await browser.driver.actions().move({ origin: await row('example.txt') }).perform();
+        const diffAction = await browser.driver.wait(async () => {
+            const actions = await (await row('example.txt')).findElements(By.css('[aria-label="View Diff Since Last Reviewed"]'));
+            for (const action of actions) if (await action.isDisplayed()) return action;
+            return false;
+        }, 10000, 'The incremental diff action must be beside the existing file actions');
+        await diffAction.click();
+        await browser.driver.wait(async () => {
+            const tabs = await browser.driver.findElements(By.css('.tab.active'));
+            for (const tab of tabs) if ((await tab.getAttribute('aria-label') || '').includes('Last reviewed commit')) return true;
+            return false;
+        }, 10000, 'The native diff must identify the last reviewed commit baseline');
+        await browser.takeScreenshot('changed-since-review-diff');
         await fs.writeFile(file, 'working changes\n');
         await browser.driver.wait(async () => (await checkedState()) === 'true', 15000,
             'Restoring the approved version must restore its check');
+        await browser.driver.wait(async () => (await reviewColour()) !== 'rgb(223, 165, 255)', 10000,
+            'Restoring the approval must remove the review colour');
     });
 
     it('restores the saved Orca note after the full editor restart', async () => {

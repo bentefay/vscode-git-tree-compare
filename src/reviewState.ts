@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 
 export const REVIEW_SYNC_KEY = 'reviews.v1';
 const LOCAL_KEY = 'reviews.v1.local';
+const PATHS_KEY = 'reviews.v1.paths';
 interface Storage {
     get<T>(key: string): T | undefined;
     update(key: string, value: unknown): Thenable<void> | Promise<void>;
@@ -9,8 +10,16 @@ interface Storage {
 }
 export interface ReviewRecord {
     fingerprint: string | null;
+    commit?: string;
     updatedAt: number;
     writer: string;
+}
+export interface ReviewPath { source: string; destination: string; }
+export interface ReviewUpdate { key: string; fingerprint: string | null; commit?: string; path?: ReviewPath; }
+export const isCommitId = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(value);
+function validPath(value: unknown): value is string {
+    return typeof value === 'string' && value.length > 0 && !/[\\\0]/.test(value) &&
+        !value.startsWith('/') && !/^[a-z]:/i.test(value) && !value.split('/').some(part => part === '..' || part === '.' || part === '');
 }
 type Records = Record<string, ReviewRecord>;
 export const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
@@ -48,6 +57,7 @@ function validRecords(value: unknown): Records {
         if ((r.fingerprint === null || /^[a-f0-9]{64}$/.test(r.fingerprint)) &&
             Number.isSafeInteger(r.updatedAt) && r.updatedAt >= 0 && typeof r.writer === 'string') {
             result[key] = { fingerprint: r.fingerprint, updatedAt: r.updatedAt, writer: r.writer };
+            if (r.fingerprint && isCommitId(r.commit)) { result[key].commit = r.commit; }
         }
     }
     return result;
@@ -69,13 +79,14 @@ export function mergeReviews(...sources: unknown[]): Records {
 }
 
 /** The local mirror preserves records omitted by another device's sync snapshot.
- * Only opaque repository/branch/path keys and fingerprints travel through Sync.
+ * Only opaque keys, fingerprints, commit IDs and merge metadata travel through Sync.
  * Memento has no public change event: reconcile on refresh/startup/focus.
  */
 export class ReviewStore {
     private queue: Promise<void> = Promise.resolve();
     private readonly writer = randomUUID();
     private known: Records = {};
+    private pathWrites = new Map<string, ReviewPath | undefined>();
     constructor(private readonly storage: Storage) {
         storage.setKeysForSync?.([REVIEW_SYNC_KEY]);
     }
@@ -88,6 +99,17 @@ export class ReviewStore {
     }
     get(key: string): ReviewRecord | undefined { return this.read()[key]; }
     snapshot(): Readonly<Records> { return this.read(); }
+    paths(): Record<string, ReviewPath> {
+        const result: Record<string, ReviewPath> = {};
+        const stored = this.storage.get<Record<string, ReviewPath>>(PATHS_KEY);
+        for (const [key, value] of Object.entries(stored ?? {})) {
+            if (/^[sl]:[a-f0-9]{64}$/.test(key) && value && validPath(value.source) && validPath(value.destination)) { result[key] = value; }
+        }
+        for (const [key, value] of this.pathWrites) {
+            if (value) { result[key] = value; } else { delete result[key]; }
+        }
+        return result;
+    }
     private async save(records: Records): Promise<void> {
         this.known = mergeReviews(this.known, records);
         records = this.known;
@@ -106,12 +128,21 @@ export class ReviewStore {
         return result;
     }
     reconcile(): Promise<void> { return this.enqueue(() => this.save(this.read())); }
-    setMany(updates: Array<{ key: string; fingerprint: string | null }>): Promise<void> {
+    setMany(updates: ReviewUpdate[]): Promise<void> {
         return this.enqueue(async () => {
             const records = this.read();
-            for (const { key, fingerprint } of updates) {
+            const paths = this.paths();
+            for (const { key, fingerprint, commit, path } of updates) {
                 records[key] = { fingerprint, updatedAt: Math.max(Date.now(), (records[key]?.updatedAt ?? 0) + 1), writer: this.writer };
+                if (fingerprint && isCommitId(commit)) { records[key].commit = commit; }
+                if (fingerprint && path && validPath(path.source) && validPath(path.destination)) {
+                    paths[key] = path; this.pathWrites.set(key, path);
+                }
+                if (!fingerprint) { delete paths[key]; this.pathWrites.set(key, undefined); }
             }
+            // Local path index keeps reviewed files discoverable after a complete
+            // revert removes them from the PR diff. Paths never enter Settings Sync.
+            if (JSON.stringify(this.storage.get(PATHS_KEY)) !== JSON.stringify(paths)) { await this.storage.update(PATHS_KEY, paths); }
             await this.save(mergeReviews(records));
         });
     }
