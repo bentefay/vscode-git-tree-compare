@@ -186,6 +186,64 @@ describe('Repository review workflow', () => {
         }
     });
 
+    it('keeps a reviewed file checked across clean document close events', async () => {
+        const document = await vscode.workspace.openTextDocument(reviewPath);
+        await vscode.window.showTextDocument(document, { preview: false });
+        const node = await find(reviewPath);
+        await mark(node);
+        await eventually(() => !provider.refreshInProgress);
+        const approved = provider.reviewStore.get(comparison.keyForReview(node)).fingerprint;
+        const original = comparison.fingerprinter.fingerprint.bind(comparison.fingerprinter);
+        let release, entered = false, closed = false;
+        const gate = new Promise(resolve => { release = resolve; });
+        comparison.fingerprinter.fingerprint = async (...args) => {
+            if (args[0].dstAbsPath === reviewPath) { entered = true; await gate; }
+            return original(...args);
+        };
+        const renders = [];
+        const renderListener = provider.onDidChangeTreeData(() => renders.push(checked(node)));
+        const closeListener = vscode.workspace.onDidCloseTextDocument(doc => {
+            if (doc === document) { closed = true; }
+        });
+        try {
+            // Tab closure may retain VS Code's document model in its cache.
+            // Changing language guarantees a real onDidCloseTextDocument event
+            // without changing bytes, so this regression does not depend on GC.
+            await vscode.languages.setTextDocumentLanguage(document, 'markdown');
+            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+            await eventually(() => closed);
+            assert.equal(checked(node), true, 'Closing the document must not invalidate its review');
+            assert.equal(provider.pendingRefreshTimer, undefined, 'Closing must bypass the write debounce');
+            await eventually(() => entered);
+            assert.equal(checked(node), true, 'Keep the check while close validation is pending');
+            release();
+            await eventually(() => !provider.refreshInProgress);
+            assert.equal(checked(node), true);
+            assert.ok(renders.every(Boolean), 'No intermediate render may clear the tick');
+            assert.equal(provider.reviewStore.get(comparison.keyForReview(node)).fingerprint, approved);
+        } finally {
+            release();
+            comparison.fingerprinter.fingerprint = original;
+            renderListener.dispose();
+            closeListener.dispose();
+        }
+    });
+
+    it('restores the approved check when unsaved edits are discarded on close', async () => {
+        const document = await vscode.workspace.openTextDocument(reviewPath);
+        await vscode.window.showTextDocument(document, { preview: false });
+        const node = await find(reviewPath);
+        await mark(node);
+        const approved = provider.reviewStore.get(comparison.keyForReview(node)).fingerprint;
+        const edit = new vscode.WorkspaceEdit();
+        edit.insert(document.uri, new vscode.Position(0, 0), 'discard this edit ');
+        await vscode.workspace.applyEdit(edit);
+        await eventually(() => !checked(node));
+        await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+        await eventually(() => checked(node));
+        assert.equal(provider.reviewStore.get(comparison.keyForReview(node)).fingerprint, approved);
+    });
+
     it('detects agent edits through VS Code watchers and returns hidden files to the tree', async () => {
         await vscode.workspace.getConfiguration('gitTreeCompare').update('autoRefresh', true, vscode.ConfigurationTarget.Workspace);
         await vscode.commands.executeCommand('workbench.view.extension.gitTreeCompare');

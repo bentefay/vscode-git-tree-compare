@@ -1108,11 +1108,11 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             if (event.document.uri.scheme !== 'file') { return; }
             const comparison = this.findComparisonForPath(event.document.uri.fsPath);
             if (comparison?.getDiffEndpoints().rightRef === null) {
-                this.handleWorkspaceChange(event.document.uri);
+                this.handleWorkspaceChange(event.document.uri, event.contentChanges.length > 0 || event.document.isDirty);
             }
         }));
         this.disposables.push(workspace.onDidSaveTextDocument(document => this.handleWorkspaceChange(document.uri)));
-        this.disposables.push(workspace.onDidCloseTextDocument(document => this.handleWorkspaceChange(document.uri)));
+        this.disposables.push(workspace.onDidCloseTextDocument(document => this.handleWorkspaceChange(document.uri, false)));
         this.disposables.push(window.onDidChangeWindowState(state => {
             if (state.focused) { this.revalidateOnResume(); }
         }));
@@ -1990,7 +1990,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         }
     }
 
-    private handleWorkspaceChange(uri: Uri) {
+    private handleWorkspaceChange(uri: Uri, contentsChanged = true) {
         if (uri.scheme !== 'file') { return; }
         const comparison = this.findComparisonForPath(uri.fsPath);
         if (!comparison) {
@@ -2004,10 +2004,12 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         // when automatic Git diff refresh is disabled.
         // A repository status event is not evidence that every file changed.
         // Cancel stale in-flight work but retain checks until validation finishes.
-        if (uri.fsPath === comparison.repoRoot) { comparison.reviewEpoch++; }
-        else {
-            comparison.invalidateReviews(uri.fsPath);
-            this.fireTreeDataChange();
+        if (contentsChanged) {
+            if (uri.fsPath === comparison.repoRoot) { comparison.reviewEpoch++; }
+            else {
+                comparison.invalidateReviews(uri.fsPath);
+                this.fireTreeDataChange();
+            }
         }
         this.pendingRefreshRoots.add(comparison.repoRoot);
         if (comparison === this.commitsComparison) {
@@ -2018,6 +2020,15 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         }
         if (this.pendingRefreshTimer) {
             clearTimeout(this.pendingRefreshTimer);
+            this.pendingRefreshTimer = undefined;
+        }
+        if (!contentsChanged) {
+            // Closing a document or changing clean document metadata does not
+            // change its bytes. Retain validated checks and any in-flight review
+            // approval. Validate immediately so discarding unsaved edits can also
+            // restore the last approved version without the write-burst delay.
+            void this.processPendingRefreshes();
+            return;
         }
         this.pendingRefreshTimer = setTimeout(() => {
             this.pendingRefreshTimer = undefined;

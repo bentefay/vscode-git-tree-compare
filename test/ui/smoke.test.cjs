@@ -209,13 +209,15 @@ describe('Packaged VSIX', function () {
         });
         await (await new ActivityBar().getViewControl('Explorer')).openView();
         await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
+        await openFile('example.txt');
+        await new Workbench().executeCommand('View: Close Editor');
         await new Workbench().executeCommand('Git Tree Compare: Refresh');
         await browser.driver.wait(async () => (await checkedState()) === 'true', 15000);
         const flicker = await browser.driver.executeScript(() => {
             window.reviewObserver.disconnect();
             return window.reviewFlicker;
         });
-        assert.deepEqual(flicker, [], 'Switching views must not briefly render reviewed files unchecked');
+        assert.deepEqual(flicker, [], 'Switching views or closing an editor must not briefly render reviewed files unchecked');
         const file = path.join(process.env.GTC_TEST_REPOSITORY, 'example.txt');
         await fs.writeFile(file, 'changed by an agent after review\n');
         await browser.driver.wait(async () => (await checkedState()) === 'false', 15000,
