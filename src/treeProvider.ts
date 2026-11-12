@@ -152,6 +152,7 @@ class RepositoryComparison {
     deemphasized = new Set<string>();
     localFiles = new Set<string>();
     reviewEpoch = 0;
+    private reviewFileEpochs = new Map<string, number>();
     private reviewIdentity = '';
     private syncReviews = false;
     readonly fingerprinter: ReviewFingerprinter;
@@ -200,14 +201,52 @@ class RepositoryComparison {
             (this.isDirty(file.dstAbsPath) && !!this.host.reviewStore.get(this.keyForReview(file))?.fingerprint);
     }
 
-    invalidateReviews(file?: string): void {
-        this.reviewEpoch++;
+    invalidateReviews(file?: string): boolean {
+        let changed = false;
         if (file) {
-            // A second edit does not make an already changed approval unknown.
-            // Keep its colour until validation proves it matches again.
-            if (!this.checkboxStates.get(file)?.changedSinceReview) { this.checkboxStates.delete(file); }
+            // Track only paths used by reviews. Ancestor/descendant events also
+            // invalidate directory replacements and reviewed submodules.
+            for (const [tracked, epoch] of this.reviewFileEpochs) {
+                if (tracked === file || tracked.startsWith(file + path.sep) || file.startsWith(tracked + path.sep)) {
+                    this.reviewFileEpochs.set(tracked, epoch + 1);
+                    // Keep an existing changed colour until validation proves a match.
+                    if (!this.checkboxStates.get(tracked)?.changedSinceReview) {
+                        changed = this.checkboxStates.delete(tracked) || changed;
+                    }
+                }
+            }
         }
-        else { this.checkboxStates.clear(); }
+        else {
+            this.reviewEpoch++;
+            this.reviewFileEpochs.clear();
+            changed = this.checkboxStates.size > 0;
+            this.checkboxStates.clear();
+        }
+        return changed;
+    }
+
+    reviewToken(file: string): string {
+        if (!this.reviewFileEpochs.has(file)) { this.reviewFileEpochs.set(file, 0); }
+        return `${this.reviewEpoch}:${this.reviewFileEpochs.get(file)}`;
+    }
+
+    reviewSignature(): string {
+        return JSON.stringify([this.headName, this.headCommit, this.getDiffEndpoints(), this.commitFilter.kind,
+            this.reviewIdentity, this.syncReviews]);
+    }
+
+    async reviewContextMatches(signature: string, context?: Awaited<ReturnType<RepositoryComparison['fingerprintContext']>>): Promise<boolean> {
+        if (signature !== this.reviewSignature()) { return false; }
+        // Git status notifications describe unrelated edits too. Check the refs
+        // themselves instead of treating every notification as a branch switch.
+        const head = await this.repository.getHEAD();
+        const commit = await resolveReviewCommit(this.repository, 'HEAD');
+        if (head.name !== this.headName || commit !== this.headCommit) { return false; }
+        if (context) {
+            const current = await this.fingerprintContext();
+            if (current.left !== context.left || current.right !== context.right || current.fileMode !== context.fileMode) { return false; }
+        }
+        return signature === this.reviewSignature();
     }
 
     async fingerprintContext() {
@@ -220,16 +259,21 @@ class RepositoryComparison {
 
     async refreshReviews(): Promise<void> {
         const epoch = this.reviewEpoch;
-        const signature = JSON.stringify([this.headName, this.headCommit, this.getDiffEndpoints()]);
-        const nextStates = new Map<string, CheckboxStateInfo>();
+        const signature = this.reviewSignature();
+        const files = this.reviewFiles();
+        const tokens = new Map(files.map(file => [file.dstAbsPath, this.reviewToken(file.dstAbsPath)]));
         // Keep the last validated UI state until its replacement is ready.
         // Actual file/document edits invalidate their own rows immediately.
         try { await this.host.reviewStore.reconcile(); }
         catch (error) { this.invalidateReviews(); throw error; }
         const records = this.host.reviewStore.snapshot();
-        const candidates = this.reviewFiles().filter(file => records[this.keyForReview(file)]?.fingerprint);
+        const candidates = files.filter(file => records[this.keyForReview(file)]?.fingerprint);
         if (!candidates.length) {
-            if (epoch === this.reviewEpoch) { this.checkboxStates = nextStates; }
+            if (epoch === this.reviewEpoch && signature === this.reviewSignature()) {
+                for (const file of files) {
+                    if (tokens.get(file.dstAbsPath) === this.reviewToken(file.dstAbsPath)) { this.checkboxStates.delete(file.dstAbsPath); }
+                }
+            }
             return;
         }
         let context: Awaited<ReturnType<RepositoryComparison['fingerprintContext']>>;
@@ -245,16 +289,20 @@ class RepositoryComparison {
                 return undefined;
             }
         });
-        if (epoch !== this.reviewEpoch || signature !== JSON.stringify([this.headName, this.headCommit, this.getDiffEndpoints()])) { return; }
+        if (!await this.reviewContextMatches(signature, context) || epoch !== this.reviewEpoch) { return; }
         const current = this.host.reviewStore.snapshot();
-        for (const result of checked) {
-            if (result && current[this.keyForReview(result.file)]?.fingerprint) {
-                const matches = current[this.keyForReview(result.file)].fingerprint === result.fingerprint && !this.isDirty(result.file.dstAbsPath);
-                nextStates.set(result.file.dstAbsPath, { state: matches ? TreeItemCheckboxState.Checked : TreeItemCheckboxState.Unchecked,
+        const results = new Map(checked.filter(result => result !== undefined).map(result => [result.file.dstAbsPath, result]));
+        for (const file of files) {
+            if (tokens.get(file.dstAbsPath) !== this.reviewToken(file.dstAbsPath)) { continue; }
+            const result = results.get(file.dstAbsPath);
+            if (result && current[this.keyForReview(file)]?.fingerprint) {
+                const matches = current[this.keyForReview(file)].fingerprint === result.fingerprint && !this.isDirty(file.dstAbsPath);
+                this.checkboxStates.set(file.dstAbsPath, { state: matches ? TreeItemCheckboxState.Checked : TreeItemCheckboxState.Unchecked,
                     changedSinceReview: !matches });
+            } else {
+                this.checkboxStates.delete(file.dstAbsPath);
             }
         }
-        this.checkboxStates = nextStates;
     }
 
     private async updateReviewIdentity(): Promise<void> {
@@ -1775,7 +1823,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
     private handleChangeCheckboxState(e: TreeCheckboxChangeEvent<Element>): Promise<void> {
         const contexts = new Map(e.items.map(([element]) => {
             const comparison = this.getExistingComparison(element.repositoryRoot);
-            return [element.repositoryRoot, comparison && JSON.stringify([comparison.headName, comparison.headCommit, comparison.getDiffEndpoints()])];
+            return [element.repositoryRoot, comparison?.reviewSignature()];
         }));
         const task = this.checkboxQueue.then(() => this.applyCheckboxState(e, contexts));
         this.checkboxQueue = task.catch(() => {});
@@ -1790,15 +1838,17 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
                 if (!(element instanceof FileElement || element instanceof FolderElement)) { continue; }
                 const comparison = this.getExistingComparison(element.repositoryRoot);
                 if (!comparison) { continue; }
-                if (contexts.get(element.repositoryRoot) !== JSON.stringify([comparison.headName, comparison.headCommit, comparison.getDiffEndpoints()])) {
+                if (contexts.get(element.repositoryRoot) !== comparison.reviewSignature()) {
                     continue; // A queued click must not approve a newly selected branch/comparison.
                 }
                 const files = comparison.reviewFiles().filter(file => element instanceof FileElement
                     ? file.dstAbsPath === element.dstAbsPath
                     : file.dstAbsPath.startsWith(element.dstAbsPath + path.sep));
-                for (const file of files) { comparison.invalidateReviews(file.dstAbsPath); }
+                for (const file of files) { comparison.reviewToken(file.dstAbsPath); comparison.invalidateReviews(file.dstAbsPath); }
                 const epoch = comparison.reviewEpoch;
-                const signature = JSON.stringify([comparison.headName, comparison.headCommit, comparison.getDiffEndpoints()]);
+                const signature = comparison.reviewSignature();
+                const tokens = new Map(files.map(file => [file.dstAbsPath, comparison.reviewToken(file.dstAbsPath)]));
+                const byKey = new Map(files.map(file => [comparison.keyForReview(file), file]));
                 const context = state === TreeItemCheckboxState.Checked ? await comparison.fingerprintContext() : undefined;
                 const commit = context ? await resolveReviewCommit(comparison.repository, comparison.getDiffEndpoints().rightRef ?? 'HEAD') : undefined;
                 if (commit && (comparison.getDiffEndpoints().rightRef === null ? commit !== comparison.headCommit
@@ -1806,24 +1856,52 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
                     throw new Error('Comparison changed while recording review; refresh and check again.');
                 }
                 let dirty = false;
+                let hashError: string | undefined;
                 const updates = await boundedMap<IDiffStatus, ReviewUpdate | undefined>(files, async file => {
                     const key = comparison.keyForReview(file);
                     if (!context) { return { key, fingerprint: null }; }
                     // Refusing to approve unsaved content must not erase the
                     // previous approval. Only an explicit uncheck does that.
                     if (comparison.isDirty(file.dstAbsPath)) { dirty = true; return undefined; }
-                    const fingerprint = await comparison.fingerprinter.fingerprint(file, context.left, context.right, context.fileMode);
-                    return { key, fingerprint, commit, path: file.isSubmodule ? undefined : {
-                        source: path.relative(comparison.repoRoot, file.srcAbsPath).split(path.sep).join('/'),
-                        destination: path.relative(comparison.repoRoot, file.dstAbsPath).split(path.sep).join('/') } };
+                    try {
+                        const fingerprint = await comparison.fingerprinter.fingerprint(file, context.left, context.right, context.fileMode);
+                        return { key, fingerprint, commit, path: file.isSubmodule ? undefined : {
+                            source: path.relative(comparison.repoRoot, file.srcAbsPath).split(path.sep).join('/'),
+                            destination: path.relative(comparison.repoRoot, file.dstAbsPath).split(path.sep).join('/') } };
+                    } catch (error: any) {
+                        hashError = error.message;
+                        this.log(`Could not approve ${file.dstAbsPath}`, error);
+                        return undefined;
+                    }
                 });
-                if (epoch !== comparison.reviewEpoch || signature !== JSON.stringify([comparison.headName, comparison.headCommit, comparison.getDiffEndpoints()])) {
-                    this.log('Files changed while recording review; please review and check again.');
+                if (!await comparison.reviewContextMatches(signature, context) || epoch !== comparison.reviewEpoch) {
+                    this.log('Comparison changed while recording review; please review and check again.');
                     continue;
                 }
-                await this.reviewStore.setMany(updates.filter((update): update is ReviewUpdate => update !== undefined));
-                await comparison.refreshReviews();
+                const unchanged = (file: IDiffStatus) => tokens.get(file.dstAbsPath) === comparison.reviewToken(file.dstAbsPath) &&
+                    (!context || !comparison.isDirty(file.dstAbsPath));
+                const valid = updates.filter((update): update is ReviewUpdate => update !== undefined &&
+                    byKey.has(update.key) && unchanged(byKey.get(update.key)!));
+                if (valid.length) {
+                    await this.reviewStore.setMany(valid);
+                    // Publish just the files whose hashes were computed above.
+                    // Do not rehash every previously reviewed file on this queue.
+                    if (await comparison.reviewContextMatches(signature, context) && epoch === comparison.reviewEpoch) {
+                        const current = this.reviewStore.snapshot();
+                        for (const update of valid) {
+                            const file = byKey.get(update.key)!;
+                            if (!unchanged(file) || current[update.key]?.fingerprint !== update.fingerprint) { continue; }
+                            comparison.invalidateReviews(file.dstAbsPath); // supersede older background validation of this row
+                            if (update.fingerprint) { comparison.checkboxStates.set(file.dstAbsPath, { state: TreeItemCheckboxState.Checked }); }
+                            else { comparison.checkboxStates.delete(file.dstAbsPath); }
+                        }
+                    }
+                }
+                if (valid.length < updates.filter(update => update !== undefined).length) {
+                    this.log('A selected file changed while recording review; its previous approval was retained.');
+                }
                 if (dirty) { void window.showInformationMessage('Save files before marking them reviewed. Unsaved files remain unchecked.'); }
+                if (hashError) { void window.showErrorMessage(`Some selected files could not be approved: ${hashError}. Their previous approvals were retained.`); }
             }
         } catch (error: any) {
             this.log('Could not save review progress', error);
@@ -2063,13 +2141,9 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         // Also invalidate in-flight hashes. Review correctness remains enabled
         // when automatic Git diff refresh is disabled.
         // A repository status event is not evidence that every file changed.
-        // Cancel stale in-flight work but retain checks until validation finishes.
-        if (contentsChanged) {
-            if (uri.fsPath === comparison.repoRoot) { comparison.reviewEpoch++; }
-            else {
-                comparison.invalidateReviews(uri.fsPath);
-                this.fireTreeDataChange();
-            }
+        // Reviews verify the active refs before committing their results.
+        if (contentsChanged && uri.fsPath !== comparison.repoRoot) {
+            if (comparison.invalidateReviews(uri.fsPath)) { this.fireTreeDataChange(); }
         }
         this.pendingRefreshRoots.add(comparison.repoRoot);
         if (comparison === this.commitsComparison) {
@@ -2078,7 +2152,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             // even while the main tree is hidden.
             this._onDidChangeRepository.fire();
         }
-        if (this.pendingRefreshTimer) {
+        if (!contentsChanged && this.pendingRefreshTimer) {
             clearTimeout(this.pendingRefreshTimer);
             this.pendingRefreshTimer = undefined;
         }
@@ -2090,6 +2164,9 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             void this.processPendingRefreshes();
             return;
         }
+        // Bound the delay from the first event. Continuous writes must not
+        // postpone validation of other files until the repository goes quiet.
+        if (this.pendingRefreshTimer) { return; }
         this.pendingRefreshTimer = setTimeout(() => {
             this.pendingRefreshTimer = undefined;
             void this.processPendingRefreshes();

@@ -304,6 +304,179 @@ describe('Repository review workflow', () => {
         });
     });
 
+    it('approves one file while unrelated edits and a blocked background validation continue', async () => {
+        const file = path.join(root, 'concurrent-approval.txt');
+        const other = path.join(root, 'concurrent-noise.txt');
+        await fs.writeFile(file, 'review this file\n');
+        await fs.writeFile(other, 'agent work\n');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        const node = await find(file), noise = await find(other);
+        await mark(noise);
+        await eventually(() => !provider.refreshInProgress);
+        const originalHash = comparison.fingerprinter.fingerprint.bind(comparison.fingerprinter);
+        const originalSave = provider.reviewStore.setMany.bind(provider.reviewStore);
+        let release, backgroundEntered = false, approvalDone = false, targetHashes = 0;
+        const gate = new Promise(resolve => { release = resolve; });
+        async function editOther(contents) {
+            const token = comparison.reviewToken(other);
+            await fs.writeFile(other, contents);
+            await eventually(() => comparison.reviewToken(other) !== token);
+            provider.handleWorkspaceChange(vscode.Uri.file(root)); // Git's aggregate status event
+        }
+        comparison.fingerprinter.fingerprint = async (...args) => {
+            if (args[0].dstAbsPath === other) { backgroundEntered = true; await gate; }
+            const result = await originalHash(...args);
+            if (args[0].dstAbsPath === file) {
+                targetHashes++;
+                await editOther('agent edit during hashing\n');
+            }
+            return result;
+        };
+        provider.reviewStore.setMany = async updates => {
+            await originalSave(updates);
+            await editOther('agent edit while approval is being saved\n');
+        };
+        const background = comparison.refreshReviews();
+        let approval;
+        try {
+            await eventually(() => backgroundEntered);
+            approval = provider.handleChangeCheckboxState({ items: [[node, vscode.TreeItemCheckboxState.Checked]] })
+                .then(() => { approvalDone = true; });
+            await eventually(() => approvalDone);
+            assert.equal(checked(node), true, 'Approval must finish while unrelated validation is still blocked');
+            assert.equal(targetHashes, 1, 'The clicked file must not be hashed again to display its check');
+            assert.ok(provider.reviewStore.get(comparison.keyForReview(node)).fingerprint);
+            release();
+            await background;
+            assert.equal(checked(node), true, 'Older background results must not erase the new approval');
+        } finally {
+            release();
+            comparison.fingerprinter.fingerprint = originalHash;
+            provider.reviewStore.setMany = originalSave;
+            await Promise.all([background, approval]);
+        }
+    });
+
+    it('publishes stable background review results despite changes to another candidate', async () => {
+        const file = path.join(root, 'concurrent-approval.txt');
+        const other = path.join(root, 'concurrent-noise.txt');
+        const node = await find(file), noise = await find(other);
+        await mark(node); await mark(noise);
+        comparison.invalidateReviews(file);
+        assert.equal(checked(node), false);
+        const original = comparison.fingerprinter.fingerprint.bind(comparison.fingerprinter);
+        let injected = false;
+        comparison.fingerprinter.fingerprint = async (...args) => {
+            const result = await original(...args);
+            if (!injected && args[0].dstAbsPath === other) {
+                injected = true;
+                const token = comparison.reviewToken(other);
+                await fs.writeFile(other, 'another agent edit during background validation\n');
+                await eventually(() => comparison.reviewToken(other) !== token);
+                provider.handleWorkspaceChange(vscode.Uri.file(root));
+            }
+            return result;
+        };
+        try {
+            await comparison.refreshReviews();
+            assert.equal(injected, true);
+            assert.equal(checked(node), true, 'An unchanged candidate must publish independently');
+            assert.equal(checked(noise), false, 'The changed candidate must not publish an obsolete check');
+        } finally { comparison.fingerprinter.fingerprint = original; }
+    });
+
+    it('keeps a pending refresh deadline when further unrelated edits arrive', async () => {
+        const file = vscode.Uri.file(path.join(root, 'concurrent-noise.txt'));
+        provider.handleWorkspaceChange(file);
+        const timer = provider.pendingRefreshTimer;
+        assert.ok(timer);
+        provider.handleWorkspaceChange(file);
+        provider.handleWorkspaceChange(vscode.Uri.file(root));
+        assert.equal(provider.pendingRefreshTimer, timer, 'Continuous edits must not restart the delay');
+    });
+
+    it('rejects an approval if the branch switches during hashing, even at the same commit', async () => {
+        const file = path.join(root, 'concurrent-approval.txt');
+        const node = await find(file);
+        await mark(node);
+        const key = comparison.keyForReview(node);
+        const previous = provider.reviewStore.get(key);
+        await fs.writeFile(file, 'new version not yet approved\n');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        const original = comparison.fingerprinter.fingerprint.bind(comparison.fingerprinter);
+        let switched = false;
+        comparison.fingerprinter.fingerprint = async (...args) => {
+            const result = await original(...args);
+            if (!switched && args[0].dstAbsPath === file) {
+                switched = true;
+                git('switch', '-c', 'concurrent-review-branch');
+            }
+            return result;
+        };
+        try {
+            await provider.handleChangeCheckboxState({ items: [[node, vscode.TreeItemCheckboxState.Checked]] });
+            assert.equal(switched, true);
+            assert.equal(checked(node), false);
+            assert.deepEqual(provider.reviewStore.get(key), previous, 'A branch change must retain the previous approval');
+        } finally {
+            comparison.fingerprinter.fingerprint = original;
+            git('switch', 'feature');
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        }
+    });
+
+    it('does not display a check if the selected file changes while storage is updating', async () => {
+        const file = path.join(root, 'concurrent-approval.txt');
+        const node = await find(file);
+        await mark(node, vscode.TreeItemCheckboxState.Unchecked);
+        const original = provider.reviewStore.setMany.bind(provider.reviewStore);
+        let changed = false;
+        provider.reviewStore.setMany = async updates => {
+            await original(updates);
+            const token = comparison.reviewToken(file);
+            await fs.writeFile(file, 'changed during persistence\n');
+            await eventually(() => comparison.reviewToken(file) !== token);
+            changed = true;
+        };
+        try {
+            await provider.handleChangeCheckboxState({ items: [[node, vscode.TreeItemCheckboxState.Checked]] });
+            assert.equal(changed, true);
+            assert.equal(checked(node), false, 'The persisted earlier hash must not check newer contents');
+            const approved = provider.reviewStore.get(comparison.keyForReview(node)).fingerprint;
+            const context = await comparison.fingerprintContext();
+            assert.notEqual(approved, await comparison.fingerprinter.fingerprint(node, context.left, context.right, context.fileMode));
+        } finally { provider.reviewStore.setMany = original; }
+    });
+
+    it('approves stable folder children independently of a child edited during hashing', async () => {
+        // Use established files so this isolates edits from folder creation.
+        const folderPath = path.join(root, 'generated');
+        const stable = path.join(folderPath, 'two.ts'), changing = path.join(folderPath, 'one.ts');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        const folder = await find(folderPath), stableNode = await find(stable), changingNode = await find(changing);
+        const previous = provider.reviewStore.get(comparison.keyForReview(changingNode));
+        const original = comparison.fingerprinter.fingerprint.bind(comparison.fingerprinter);
+        let injected = false;
+        comparison.fingerprinter.fingerprint = async (...args) => {
+            const result = await original(...args);
+            if (!injected && args[0].dstAbsPath === changing) {
+                injected = true;
+                const token = comparison.reviewToken(changing);
+                await fs.writeFile(changing, 'changed during hashing\n');
+                await eventually(() => comparison.reviewToken(changing) !== token);
+            }
+            return result;
+        };
+        try {
+            await provider.handleChangeCheckboxState({ items: [[folder, vscode.TreeItemCheckboxState.Checked]] });
+            assert.equal(injected, true);
+            assert.equal(checked(stableNode), true);
+            assert.equal(checked(changingNode), false);
+            assert.equal(checked(folder), false);
+            assert.deepEqual(provider.reviewStore.get(comparison.keyForReview(changingNode)), previous);
+        } finally { comparison.fingerprinter.fingerprint = original; }
+    });
+
     it('retains the approved hash when an agent edits during fingerprint calculation', async () => {
         const node = await find(reviewPath);
         await mark(node);
@@ -311,12 +484,12 @@ describe('Repository review workflow', () => {
         const original = comparison.fingerprinter.fingerprint.bind(comparison.fingerprinter);
         let injected = false;
         comparison.fingerprinter.fingerprint = async (...args) => {
-            const epoch = comparison.reviewEpoch;
+            const token = comparison.reviewToken(reviewPath);
             const result = await original(...args);
             if (!injected && args[0].dstAbsPath === reviewPath) {
                 injected = true;
                 await fs.writeFile(reviewPath, 'agent edit during review\n');
-                await eventually(() => comparison.reviewEpoch > epoch);
+                await eventually(() => comparison.reviewToken(reviewPath) !== token);
             }
             return result;
         };

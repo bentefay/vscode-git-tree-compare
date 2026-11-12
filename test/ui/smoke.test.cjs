@@ -173,10 +173,26 @@ describe('Packaged VSIX', function () {
             }
             return null;
         });
-        await (await checkbox()).click();
-        await new Workbench().executeCommand('Git Tree Compare: Refresh');
-        await browser.driver.wait(async () => (await checkedState()) === 'true', 15000,
-            'The review must validate before restarting');
+        const noise = path.join(process.env.GTC_TEST_REPOSITORY, 'agent-active.txt');
+        let writing = true, writes = 0;
+        const writer = (async () => {
+            while (writing) {
+                await fs.writeFile(noise, `agent edit ${++writes}\n`);
+                await new Promise(resolve => setTimeout(resolve, 25));
+            }
+        })();
+        try {
+            await (await checkbox()).click();
+            await new Workbench().executeCommand('Git Tree Compare: Refresh');
+            await browser.driver.wait(async () => (await checkedState()) === 'true', 15000,
+                'The review must persist while an agent continues editing unrelated files');
+            assert.ok(writes > 1);
+            await browser.takeScreenshot('approval-during-agent-edits');
+        } finally {
+            writing = false;
+            await writer;
+            await fs.unlink(noise);
+        }
         await browser.quit();
         // ExTester wipes settings before each start. The launcher restores this
         // disposable profile, including the real VS Code storage database.

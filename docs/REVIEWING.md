@@ -16,6 +16,12 @@ checks immediately; save before marking a file reviewed. Restoring exactly the
 approved comparison restores its check. “Hide reviewed files” reveals files again
 when they change.
 
+Approving a file validates and saves that file without waiting for unrelated
+agent edits or rehashing every previous approval. Folder approvals apply to each
+child independently: a child changed during validation stays unchecked while
+stable children can be approved. Branch and comparison changes still cancel
+pending approvals, and the last approved hash is retained when a file changes.
+
 Progress is stored in VS Code extension storage, outside settings.json and Git.
 When Settings Sync is enabled, review records are included. Clones and worktrees
 with the same normalized `origin` URL and branch share progress; SSH and HTTPS
