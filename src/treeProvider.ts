@@ -6,7 +6,7 @@ import { TreeDataProvider, TreeItem, TreeItemCollapsibleState,
          Uri, Disposable, EventEmitter, Event, TextDocumentShowOptions,
          QuickPickItem, ProgressLocation, Memento, OutputChannel,
          workspace, commands, window, env, WorkspaceFoldersChangeEvent, TreeView, ThemeIcon, TreeItemCheckboxState, TreeCheckboxChangeEvent, authentication, TextEditor, RelativePattern,
-         TabInputTextDiff, Range, TextEditorRevealType,
+         TabInputText, TabInputTextDiff, Range, TextEditorRevealType,
          FileDecorationProvider, FileDecoration, ProviderResult, ThemeColor } from 'vscode'
 import { NAMESPACE } from './constants'
 import { Repository, Git } from './git/git'
@@ -755,6 +755,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
     fireTreeDataChange() {
         this.parentMap.clear();
         this.elementMap.clear();
+        this.updateRevealContext();
         this._onDidChangeTreeData.fire();
     }
 
@@ -810,6 +811,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
     private treeView: TreeView<Element>;
     private parentMap: Map<string, Element> = new Map();
     private elementMap: Map<string, FileElement> = new Map();
+    private revealContextValue = '';
     private pendingRefreshRoots = new Set<FolderAbsPath>();
     private pendingRefreshTimer: NodeJS.Timeout | undefined;
     private refreshInProgress = false;
@@ -997,6 +999,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
 
     /** Called by a comparison once its refs and diff have been recomputed. */
     comparisonUpdated(comparison: RepositoryComparison) {
+        this.updateRevealContext();
         if (comparison === this.commitsComparison) {
             this._onDidChangeComparison.fire();
         }
@@ -1221,6 +1224,10 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             }
         }));
         this.disposables.push(window.onDidChangeActiveTextEditor(this.handleActiveEditorChange, this));
+        this.disposables.push(workspace.onDidOpenTextDocument(() => this.updateRevealContext()));
+        this.disposables.push(workspace.onDidCloseTextDocument(() => this.updateRevealContext()));
+        this.disposables.push(window.tabGroups.onDidChangeTabs(() => this.updateRevealContext()));
+        this.updateRevealContext();
         this.disposables.push(new Disposable(() => {
             this.disposed = true;
             if (this.pendingRefreshTimer) {
@@ -1935,6 +1942,80 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         }
     }
 
+    private revealableFiles(): Map<string, { comparison: RepositoryComparison; file: IDiffStatus }> {
+        const visible = new Map<string, { comparison: RepositoryComparison; file: IDiffStatus }>();
+        const comparisons = this.showRepositoryNodes()
+            ? this.getRepositoryRoots().map(root => this.getExistingComparison(this.displayedRoot(root)))
+            : [this.activeComparison];
+        for (const comparison of comparisons) {
+            if (!comparison) { continue; }
+            for (const file of comparison.reviewFiles()) {
+                const inside = comparison.isInsideTreeRoot(path.dirname(file.dstAbsPath));
+                if (!inside && !this.includeFilesOutsideWorkspaceFolderRoot) { continue; }
+                if (this.fileVisibleInTree(comparison, file.dstAbsPath, inside ? comparison.treeRoot : comparison.repoRoot)) {
+                    visible.set(normalizePath(file.dstAbsPath), { comparison, file });
+                }
+            }
+        }
+        // Git diffs of renames use the original path on their left side.
+        for (const target of [...visible.values()]) {
+            const source = normalizePath(target.file.srcAbsPath);
+            if (!visible.has(source)) { visible.set(source, target); }
+        }
+        return visible;
+    }
+
+    private editorFilePath(uri: Uri): string | undefined {
+        if (uri.scheme === 'file') { return normalizePath(uri.fsPath); }
+        if (uri.scheme === 'git') {
+            try {
+                const value = JSON.parse(uri.query).path;
+                if (typeof value === 'string' && path.isAbsolute(value)) { return normalizePath(value); }
+            } catch { /* Not a built-in Git document. */ }
+        }
+        return undefined;
+    }
+
+    private updateRevealContext(): void {
+        if (this.disposed) { return; }
+        const files = this.revealableFiles();
+        const resources = new Set([...files.keys()].map(file => Uri.file(file).toString()));
+        const open = workspace.textDocuments.map(document => document.uri);
+        for (const group of window.tabGroups.all) {
+            for (const tab of group.tabs) {
+                if (tab.input instanceof TabInputText) { open.push(tab.input.uri); }
+                else if (tab.input instanceof TabInputTextDiff) { open.push(tab.input.original, tab.input.modified); }
+            }
+        }
+        for (const uri of open) {
+            const file = this.editorFilePath(uri);
+            if (file && files.has(file)) { resources.add(uri.toString()); }
+        }
+        const value = JSON.stringify([...resources].sort());
+        if (value === this.revealContextValue) { return; }
+        this.revealContextValue = value;
+        void commands.executeCommand('setContext', NAMESPACE + '.revealableResources', JSON.parse(value))
+            .then(undefined, error => this.log('Could not update the reveal menu', error));
+    }
+
+    async revealInTree(resource?: Uri): Promise<void> {
+        const uri = resource ?? window.activeTextEditor?.document.uri;
+        if (!uri) { return; }
+        const file = this.editorFilePath(uri);
+        const target = file && this.revealableFiles().get(file);
+        if (!target) { return; } // Recheck a menu that may have been opened before a filter changed.
+        await commands.executeCommand(NAMESPACE + '.focus');
+        const current = this.revealableFiles().get(file!);
+        if (!current) { return; }
+        const { comparison, file: status } = current;
+        const base = comparison.isInsideTreeRoot(path.dirname(status.dstAbsPath)) ? comparison.treeRoot : comparison.repoRoot;
+        const node = new FileElement(status.srcAbsPath, status.dstAbsPath, path.relative(base, status.dstAbsPath),
+            status.status, status.isSubmodule, comparison.repoRoot, status.stats);
+        try {
+            await this.treeView.reveal(node, { select: true, focus: true });
+        } catch (error: any) { this.log('Could not reveal the file in Git Tree Compare', error); }
+    }
+
     log(msg: string, error: Error | undefined=undefined) {
         if (error) {
             console.warn(msg, error);
@@ -2015,7 +2096,33 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
 
     getParent(element: Element): Element | undefined {
         const id = getElementId(element);
-        return this.parentMap.get(id);
+        const cached = this.parentMap.get(id);
+        if (cached) { return cached; }
+        // A focus-triggered refresh can clear the cache between reveal()'s
+        // asynchronous parent requests. Reconstruct the current layout from
+        // loaded comparison data, without requiring folders to be expanded.
+        const comparison = this.getExistingComparison(element.repositoryRoot);
+        if (!comparison || element instanceof RepositoryElement) { return undefined; }
+        const ref = new RefElement(comparison.repoRoot, comparison.baseRef, this.hasFiles(comparison));
+        if (element instanceof RefElement) {
+            return this.showRepositoryNodes()
+                ? new RepositoryElement(comparison.repoRoot, path.basename(comparison.repoRoot), true) : undefined;
+        }
+        if (element instanceof RepoRootElement) { return ref; }
+        const outside = !comparison.isInsideTreeRoot(path.dirname(element.dstAbsPath));
+        if (outside && !this.includeFilesOutsideWorkspaceFolderRoot) { return undefined; }
+        let parent: Element = outside ? new RepoRootElement(comparison.repoRoot, comparison.repoRoot) : ref;
+        let folder = outside ? comparison.repoRoot : comparison.treeRoot;
+        while (true) {
+            const children = this.getFileSystemEntries(comparison, folder, outside);
+            this.recordParents(parent, children);
+            if (children.some(child => getElementId(child) === id)) { return parent; }
+            const next = children.find((child): child is FolderElement => child instanceof FolderElement &&
+                element.dstAbsPath.startsWith(child.dstAbsPath + path.sep));
+            if (!next) { return undefined; }
+            parent = next;
+            folder = next.dstAbsPath;
+        }
     }
 
     private computeFolderCheckboxState(comparison: RepositoryComparison, folder: FolderElement): TreeItemCheckboxState {

@@ -24,7 +24,7 @@ describe('Packaged VSIX', function () {
         await quickOpen.confirm();
         await browser.driver.wait(async () => {
             const tabs = await browser.driver.findElements(By.css('.tab.active'));
-            for (const tab of tabs) if ((await tab.getAttribute('aria-label') || '').includes(name)) return true;
+            for (const tab of tabs) if ((await tab.getAttribute('aria-label') || '').includes(path.basename(name))) return true;
             return false;
         }, 10000, 'The unchanged file must be active');
     }
@@ -162,6 +162,61 @@ describe('Packaged VSIX', function () {
             return true;
         }, 5000, 'Context menu must close before continuing');
     });
+    it('reveals included editor and inactive-tab files in the comparison view', async () => {
+        const title = 'Reveal in Git Tree Compare View';
+        const menuItems = async () => {
+            const items = await browser.driver.findElements(By.css('.context-view .action-label'));
+            // Recent VS Code editors host their context menu in a shadow root;
+            // tab menus can still use the workbench's ordinary context view.
+            for (const host of await browser.driver.findElements(By.css('.shadow-root-host'))) {
+                const shadow = await host.getShadowRoot();
+                items.push(...await shadow.findElements(By.css('.action-label')));
+            }
+            return items;
+        };
+        const menuItem = async () => {
+            for (const item of await menuItems()) {
+                if (await item.isDisplayed() && await item.getText() === title) return item;
+            }
+            return false;
+        };
+        const tab = async name => browser.driver.wait(async () => {
+            for (const item of await browser.driver.findElements(By.css('.tab'))) {
+                if ((await item.getAttribute('aria-label') || '').startsWith(name)) return item;
+            }
+            return false;
+        }, 10000);
+        await openFile('generated/output.ts');
+        await browser.driver.actions().doubleClick(await tab('output.ts')).perform(); // retain the tab when another file opens
+        const generated = await row('generated');
+        if (await generated.getAttribute('aria-expanded') === 'true') {
+            await (await generated.findElement(By.css('.monaco-tl-twistie'))).click();
+        }
+        await (await new ActivityBar().getViewControl('Explorer')).openView();
+        const editor = await browser.driver.wait(async () => {
+            for (const item of await browser.driver.findElements(By.css('.editor-instance .monaco-editor .view-lines'))) {
+                if (await item.isDisplayed()) return item;
+            }
+            return false;
+        }, 10000);
+        await browser.driver.actions().contextClick(editor).perform();
+        await (await browser.driver.wait(menuItem, 10000, 'Included editor must offer reveal')).click();
+        await browser.driver.wait(async () => (await row('output.ts')).getAttribute('aria-selected').then(value => value === 'true'), 10000);
+        await browser.takeScreenshot('reveal-from-editor');
+
+        await openFile('other.txt'); // unchanged, absent from the comparison
+        await browser.driver.actions().contextClick(await tab('other.txt')).perform();
+        await browser.driver.wait(async () => (await menuItems()).length > 0, 10000);
+        assert.equal(await menuItem(), false, 'An unchanged file must not offer reveal');
+        await browser.driver.actions().sendKeys(Key.ESCAPE).perform();
+        await (await new ActivityBar().getViewControl('Explorer')).openView();
+        // Right-click a different tab: the command must use that tab's URI.
+        await browser.driver.actions().contextClick(await tab('output.ts')).perform();
+        await (await browser.driver.wait(menuItem, 10000, 'Included inactive tab must offer reveal')).click();
+        await browser.driver.wait(async () => (await row('output.ts')).getAttribute('aria-selected').then(value => value === 'true'), 10000);
+        await browser.takeScreenshot('reveal-from-inactive-tab');
+    });
+
     it('restores review progress after a full restart and retains the approved hash after edits', async () => {
         const checkbox = async () => (await row('example.txt')).findElement(By.css('[role="checkbox"]'));
         // Read each render atomically: refreshing the tree legitimately replaces rows.

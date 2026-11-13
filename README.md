@@ -42,6 +42,11 @@ command and view identifiers.
    copy its path, or open its containing folder on disk.
 4. Use the view toolbar to search, refresh, or switch between tree and list views.
 
+Right-click an editor or its tab and choose **Reveal in Git Tree Compare View**
+to select that file in the tree and expand its parent folders. The action appears
+only for files included in the current comparison and filters, including files
+inside collapsed folders. It also works from Git diff editors.
+
 The default **merge** mode compares your working tree with its common ancestor
 with the selected base, which is useful for reviewing a feature branch. **Full**
 mode compares directly with the selected base. The chosen base is remembered per

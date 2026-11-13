@@ -50,6 +50,80 @@ describe('Git Tree Compare in the extension host', () => {
         assert.ok(vscode.window.tabGroups.all.some(group => group.tabs.some(tab => tab.input instanceof vscode.TabInputTextDiff)));
     });
 
+    it('reveals editor resources inside collapsed, compact and list views without cached parents', async () => {
+        const config = vscode.workspace.getConfiguration('gitTreeCompare');
+        const old = Object.fromEntries(['autoReveal', 'collapsed', 'compactFolders', 'viewMode'].map(key => [key, config.get(key)]));
+        const file = path.join(root, 'generated/nested/path/reveal.ts');
+        await fs.mkdir(path.dirname(file), { recursive: true });
+        await fs.writeFile(file, '// reveal this file\n');
+        try {
+            await config.update('autoReveal', false, vscode.ConfigurationTarget.Workspace);
+            await config.update('collapsed', true, vscode.ConfigurationTarget.Workspace);
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+            await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(path.join(root, 'example.txt')));
+            for (const [compact, mode] of [[false, 'tree'], [true, 'tree'], [false, 'list']]) {
+                await config.update('compactFolders', compact, vscode.ConfigurationTarget.Workspace);
+                await config.update('viewMode', mode, vscode.ConfigurationTarget.Workspace);
+                await eventually(() => provider.compactFolders === compact && provider.viewAsList === (mode === 'list'));
+                await vscode.commands.executeCommand('workbench.view.explorer');
+                provider.fireTreeDataChange();
+                assert.ok(JSON.parse(provider.revealContextValue).includes(vscode.Uri.file(file).toString()));
+                await vscode.commands.executeCommand('gitTreeCompare.revealInTree', vscode.Uri.file(file));
+                assert.equal(provider.treeView.visible, true);
+                assert.equal(provider.treeView.selection[0]?.dstAbsPath, file);
+                assert.ok(provider.getParent(provider.treeView.selection[0]), 'Reveal must materialize the parent chain');
+            }
+            const gitApi = vscode.extensions.getExtension('vscode.git').exports.getAPI(1);
+            const committed = path.join(root, 'committed.txt');
+            const revision = gitApi.toGitUri(vscode.Uri.file(committed), 'HEAD');
+            await vscode.workspace.openTextDocument(revision);
+            await eventually(() => JSON.parse(provider.revealContextValue).includes(revision.toString()));
+            await vscode.commands.executeCommand('gitTreeCompare.revealInTree', revision);
+            assert.equal(provider.treeView.selection[0]?.dstAbsPath, committed);
+        } finally {
+            for (const [key, value] of Object.entries(old)) await config.update(key, value, vscode.ConfigurationTarget.Workspace);
+            await fs.rm(path.join(root, 'generated/nested'), { recursive: true, force: true });
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        }
+    });
+
+    it('only offers reveal for included files and rechecks filters when a menu command executes', async () => {
+        const comparison = provider.activeComparison;
+        const file = path.join(root, 'example.txt');
+        const uri = vscode.Uri.file(file);
+        const offered = () => JSON.parse(provider.revealContextValue).includes(uri.toString());
+        await vscode.commands.executeCommand('gitTreeCompare.revealInTree', vscode.Uri.file(path.join(root, 'committed.txt')));
+        try {
+            assert.equal(offered(), true);
+            assert.equal(JSON.parse(provider.revealContextValue).includes(vscode.Uri.file(path.join(root, 'other.txt')).toString()), false);
+            comparison.searchFilter = 'committed.txt';
+            provider.fireTreeDataChange();
+            assert.equal(offered(), false);
+            await vscode.commands.executeCommand('gitTreeCompare.revealInTree', uri);
+            assert.notEqual(provider.treeView.selection[0]?.dstAbsPath, file, 'A stale menu must not reveal a filtered-out file');
+            comparison.searchFilter = undefined;
+            provider.fireTreeDataChange();
+            await vscode.commands.executeCommand('gitTreeCompare.revealInTree', uri);
+            const node = provider.treeView.selection[0];
+            await eventually(async () => {
+                await provider.handleChangeCheckboxState({ items: [[node, vscode.TreeItemCheckboxState.Checked]] });
+                return provider.getTreeItem(node).checkboxState === vscode.TreeItemCheckboxState.Checked;
+            });
+            provider.setHideCheckedFiles(true);
+            assert.equal(offered(), false);
+            provider.setHideCheckedFiles(false);
+            assert.equal(offered(), true);
+            await provider.handleChangeCheckboxState({ items: [[node, vscode.TreeItemCheckboxState.Unchecked]] });
+            await provider.setCommitFilter({ kind: 'empty' });
+            assert.equal(offered(), false);
+        } finally {
+            comparison.searchFilter = undefined;
+            provider.setHideCheckedFiles(false);
+            await provider.setCommitFilter({ kind: 'all' });
+            provider.fireTreeDataChange();
+        }
+    });
+
     it('restores and removes only the literal wildcard filename', async () => {
         const special = path.join(root, '*.txt');
         await fs.writeFile(special, 'literal base\n');

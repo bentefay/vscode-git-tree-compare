@@ -347,6 +347,11 @@
                 "title": "Copy Note",
                 "category": "Git Tree Compare",
                 "icon": "$(copy)"
+            },
+            {
+                "command": "gitTreeCompare.revealInTree",
+                "title": "Reveal in Git Tree Compare View",
+                "category": "Git Tree Compare"
             }
         ],
         "submenus": [
@@ -400,6 +405,10 @@
                 {
                     "command": "gitTreeCompare.orca.copy",
                     "when": "false"
+                },
+                {
+                    "command": "gitTreeCompare.revealInTree",
+                    "when": "resource in gitTreeCompare.revealableResources"
                 }
             ],
             "gitTreeCompare.viewAndSort": [
@@ -803,6 +812,18 @@
                     "command": "gitTreeCompare.orca.addComment",
                     "group": "navigation@20",
                     "when": "config.gitTreeCompare.orca.enabled && isWorkspaceTrusted && (resourceScheme == file || resourceScheme == git)"
+                },
+                {
+                    "command": "gitTreeCompare.revealInTree",
+                    "when": "resource in gitTreeCompare.revealableResources",
+                    "group": "navigation@21"
+                }
+            ],
+            "editor/title/context": [
+                {
+                    "command": "gitTreeCompare.revealInTree",
+                    "when": "resource in gitTreeCompare.revealableResources",
+                    "group": "navigation@21"
                 }
             ]
         },
