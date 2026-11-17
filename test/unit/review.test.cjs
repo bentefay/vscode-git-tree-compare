@@ -38,7 +38,7 @@ test('review records sync independently, merge concurrent devices, and preserve 
     const local = reviewKey('/local/repo', 'feature', 'file', false);
     await a.setMany([{ key: local, fingerprint: sha256('local') }]);
     assert.equal(one.get(REVIEW_SYNC_KEY)[local], undefined);
-    assert.deepEqual(one.syncKeys, [REVIEW_SYNC_KEY]);
+    assert.deepEqual(one.syncKeys, [REVIEW_SYNC_KEY, 'reviews.history.v1']);
 });
 
 test('portable repository keys strip credentials and transport, distinguish forks/branches/paths', () => {
@@ -232,4 +232,106 @@ test('delayed Memento notifications cannot roll back an approval already observe
     assert.equal(store.get(key).fingerprint, sha256('new approval'));
     await store.reconcile();
     assert.equal(new ReviewStore(storage).get(key).fingerprint, sha256('new approval'));
+});
+
+const { ReviewHistory, HISTORY_SYNC_KEY, historyScope } = require('../../out/reviewHistory');
+const { ReviewNavigation } = require('../../out/reviewNavigation');
+
+test('review history retains every checkpoint, deduplicates files, and merges synced devices without paths', async () => {
+    const storage = new Memory(), other = new Memory();
+    const history = new ReviewHistory(storage), remote = new ReviewHistory(other);
+    const scope = historyScope('host/repo', 'feature', true);
+    const key = reviewKey('host/repo', 'feature', 'secret/path', true);
+    const first = { key, commit: 'a'.repeat(40), reviewedAt: 10 };
+    await history.record(scope, [first, first]);
+    await history.record(scope, [{ ...first, commit: 'b'.repeat(40), reviewedAt: 20 }]);
+    assert.equal((await history.list(scope)).length, 2);
+    assert.equal((await history.list(scope))[1].fileCount, 1);
+    await other.update(HISTORY_SYNC_KEY, storage.get(HISTORY_SYNC_KEY));
+    await remote.record(scope, [{ ...first, commit: 'c'.repeat(40), reviewedAt: 30 }]);
+    await storage.update(HISTORY_SYNC_KEY, other.get(HISTORY_SYNC_KEY));
+    assert.equal((await new ReviewHistory(storage).list(scope)).length, 3);
+    await storage.update(HISTORY_SYNC_KEY, {}); // another device omits our imported history
+    assert.equal((await new ReviewHistory(storage).list(scope)).length, 3, 'The local mirror retains imported checkpoints across restart');
+    assert.deepEqual(await history.list(historyScope('host/repo', 'another', true)), []);
+    const localScope = historyScope('/local/repo', 'feature', false);
+    await history.record(localScope, [{ ...first, key: reviewKey('local', 'feature', 'file', false) }]);
+    assert.equal(storage.get(HISTORY_SYNC_KEY)[localScope], undefined);
+    assert.ok(!JSON.stringify(storage.get(HISTORY_SYNC_KEY)).includes('secret/path'));
+    await history.record(scope, [{ ...first, commit: '--output=bad' }]);
+    assert.equal((await history.list(scope)).length, 3);
+});
+
+test('content approvals ignore the selected base but detect byte, mode and path changes', async t => {
+    const repo = await fixture(t), fp = new ReviewFingerprinter(repo), file = entry(repo, 'ordinary.txt');
+    const base = await fp.resolve('HEAD');
+    await fs.writeFile(file.dstAbsPath, 'new version\n');
+    await repo.exec(['add', '.']); await repo.exec(['commit', '-m', 'New version']);
+    const head = await fp.resolve('HEAD');
+    const approved = await fp.fingerprint(file, base, null, true, true);
+    assert.equal(await fp.fingerprint(file, head, null, true, true), approved);
+    assert.equal(await fp.fingerprint(file, base, head, true, true), approved);
+    await fs.writeFile(file.dstAbsPath, 'changed again\n');
+    assert.notEqual(await fp.fingerprint(file, base, null, true, true), approved);
+});
+
+test('navigation uses bounded metadata queries, distinguishes branch tips, and retains unavailable checkpoints', async t => {
+    const repo = await fixture(t);
+    const base = await resolveReviewCommit(repo, 'HEAD');
+    await repo.exec(['update-ref', 'refs/remotes/origin/main', base]);
+    await repo.exec(['checkout', '-b', 'feature']);
+    await fs.writeFile(path.join(repo.root, 'new.txt'), 'one\n');
+    await repo.exec(['add', '.']); await repo.exec(['commit', '-m', 'Follow-up']);
+    const head = await resolveReviewCommit(repo, 'HEAD');
+    const calls = [], original = repo.exec.bind(repo);
+    repo.exec = (...args) => { calls.push(args[0]); return original(...args); };
+    const navigation = new ReviewNavigation(repo);
+    const context = { key: 'one', repoRoot: repo.root, scope: 'scope', head, branch: 'feature', target: 'origin/main' };
+    const [one, two] = await Promise.all([navigation.bases(context, 'refs'), navigation.bases(context, 'refs')]);
+    assert.equal(one, two, 'Concurrent callers share the same in-flight query');
+    assert.equal(calls.filter(args => args[0] === 'merge-base').length, 1);
+    assert.equal(one.mergeBase, base);
+    assert.ok(one.candidates.some(c => c.label === 'origin/main' && c.commit === base));
+    assert.ok(one.candidates.some(c => c.label === 'main' && c.commit === base));
+    const before = calls.length;
+    assert.equal((await navigation.commits(base, head, 0))[0].label, 'Follow-up');
+    await navigation.commits(base, head, 0);
+    assert.equal(calls.length, before + 1, 'Re-rendering a page does not repeat git log');
+    const log = calls.find(args => args[0] === 'log');
+    assert.ok(log.includes('--max-count=101'));
+    assert.ok(!log.includes('--numstat'));
+    const records = [{ commit: head, reviewedAt: 20, fileCount: 2 }, { commit: 'f'.repeat(40), reviewedAt: 10, fileCount: 1 }];
+    const checkpoints = await navigation.checkpoints(records);
+    assert.equal(checkpoints[0].available, true);
+    assert.equal(checkpoints[1].available, false);
+    assert.equal(calls.filter(args => args[0] === 'cat-file').length, 1, 'One batch checks all visible checkpoints');
+});
+
+test('large review history imports yield to the event loop', async () => {
+    const storage = new Memory(), scope = historyScope('host/repo', 'feature', true);
+    const files = Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [reviewKey('host/repo', 'feature', `file-${i}`, true), i]));
+    await storage.update(HISTORY_SYNC_KEY, { [scope]: { ['a'.repeat(40)]: files } });
+    let responsive = false;
+    setImmediate(() => { responsive = true; });
+    const checkpoints = await new ReviewHistory(storage).list(scope);
+    assert.equal(responsive, true, 'The extension host handles other callbacks during history imports');
+    assert.equal(checkpoints[0].fileCount, 2000);
+});
+
+test('PR history pages return bounded contiguous metadata without dropping older commits', async t => {
+    const repo = await fixture(t);
+    const base = await resolveReviewCommit(repo, 'HEAD');
+    const tree = (await repo.exec(['rev-parse', 'HEAD^{tree}'])).stdout.trim();
+    let head = base;
+    for (let i = 0; i < 110; i++) {
+        head = (await repo.exec(['commit-tree', tree, '-p', head], { input: `Follow-up ${i}\n` })).stdout.trim();
+    }
+    const navigation = new ReviewNavigation(repo);
+    const first = await navigation.commits(base, head, 0);
+    const next = await navigation.commits(base, head, 100);
+    assert.equal(first.length, 101, 'One lookahead row indicates another page');
+    assert.equal(next.length, 10);
+    assert.equal(first[0].label, 'Follow-up 109');
+    assert.equal(next[0].label, 'Follow-up 9');
+    assert.equal(new Set([...first.slice(0, 100), ...next].map(c => c.commit)).size, 110);
 });

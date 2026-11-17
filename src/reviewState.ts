@@ -10,12 +10,13 @@ interface Storage {
 }
 export interface ReviewRecord {
     fingerprint: string | null;
+    contentOnly?: boolean;
     commit?: string;
     updatedAt: number;
     writer: string;
 }
 export interface ReviewPath { source: string; destination: string; }
-export interface ReviewUpdate { key: string; fingerprint: string | null; commit?: string; path?: ReviewPath; }
+export interface ReviewUpdate { key: string; fingerprint: string | null; contentOnly?: boolean; commit?: string; path?: ReviewPath; }
 export const isCommitId = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(value);
 function validPath(value: unknown): value is string {
     return typeof value === 'string' && value.length > 0 && !/[\\\0]/.test(value) &&
@@ -57,6 +58,7 @@ function validRecords(value: unknown): Records {
         if ((r.fingerprint === null || /^[a-f0-9]{64}$/.test(r.fingerprint)) &&
             Number.isSafeInteger(r.updatedAt) && r.updatedAt >= 0 && typeof r.writer === 'string') {
             result[key] = { fingerprint: r.fingerprint, updatedAt: r.updatedAt, writer: r.writer };
+            if (r.fingerprint && r.contentOnly === true) { result[key].contentOnly = true; }
             if (r.fingerprint && isCommitId(r.commit)) { result[key].commit = r.commit; }
         }
     }
@@ -88,7 +90,7 @@ export class ReviewStore {
     private known: Records = {};
     private pathWrites = new Map<string, ReviewPath | undefined>();
     constructor(private readonly storage: Storage) {
-        storage.setKeysForSync?.([REVIEW_SYNC_KEY]);
+        storage.setKeysForSync?.([REVIEW_SYNC_KEY, 'reviews.history.v1']);
     }
     private read(): Records {
         // Memento change notifications (including our own writes echoed back by
@@ -132,8 +134,9 @@ export class ReviewStore {
         return this.enqueue(async () => {
             const records = this.read();
             const paths = this.paths();
-            for (const { key, fingerprint, commit, path } of updates) {
+            for (const { key, fingerprint, contentOnly, commit, path } of updates) {
                 records[key] = { fingerprint, updatedAt: Math.max(Date.now(), (records[key]?.updatedAt ?? 0) + 1), writer: this.writer };
+                if (fingerprint && contentOnly) { records[key].contentOnly = true; }
                 if (fingerprint && isCommitId(commit)) { records[key].commit = commit; }
                 if (fingerprint && path && validPath(path.source) && validPath(path.destination)) {
                     paths[key] = path; this.pathWrites.set(key, path);

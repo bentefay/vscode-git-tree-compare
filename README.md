@@ -40,6 +40,8 @@ command and view identifiers.
 2. Use **Change Base…** to choose a branch, tag or commit.
 3. Select a file to open its diff. Use the context menu to open the file itself,
    copy its path, or open its containing folder on disk.
+   Folder context menus also offer **Open Containing Folder** to reveal the selected
+   folder in your system file manager.
 4. Use the view toolbar to search, refresh, or switch between tree and list views.
 
 Right-click an editor or its tab and choose **Reveal in Git Tree Compare View**
@@ -72,13 +74,14 @@ you concentrate on the remaining work.
 
 Each repository, branch and file retains its **last explicitly approved
 fingerprint**. Edits make the checkbox unchecked without deleting that approval.
-Restoring the same comparison restores the check. Branch switches, rebases and
+Restoring the approved contents restores the check. Branch switches, rebases and
 filters retain progress; approving a new version replaces the fingerprint, and
 explicitly unchecking clears the approval.
 
-Fingerprints include both sides of the comparison, so a changed base can require
-re-review even if your file is unchanged. Unsaved editor changes also invalidate
-checks; save before approving a file.
+New approvals fingerprint the reviewed file independently of the comparison base,
+so switching review rounds preserves checks for unchanged contents. Older approvals
+keep their original semantics until you approve again. Unsaved editor changes
+invalidate checks; save before approving a file.
 
 Files changed since approval turn purple. **View Diff Since Last Reviewed**,
 beside the file's other actions and in its context menu, opens **Last reviewed
@@ -132,7 +135,20 @@ of how its parent or subfolders are opened. [More about matching rules](docs/REV
 
 ## Commits, worktrees and GitHub pull requests
 
-**Commits panel:** enable `gitTreeCompare.showCommitsPanel` to select a contiguous
+**Compare From** and **PR Commits** start collapsed; VS Code remembers your
+expansion choices. Compare From offers review checkpoints, the branch merge-base,
+and local/remote target branch tips. Click a candidate or a PR commit to compare
+that exact commit with the working tree. The PR timeline stays anchored to the
+target branch even when the selected comparison base changes. **Reset Comparison
+Base** returns to the normal comparison.
+
+Review checkpoints record when files were checked, not whole-commit approval.
+They survive later approvals, branch switches and rebases, and sync with review
+progress. Missing commits stay listed as unavailable. Selecting a base does not
+check out a branch or fetch. Branch tips refresh when you open a pane or use its
+Refresh action; selecting a tip pins its displayed commit until you choose again.
+
+**Commit Range pane:** enable `gitTreeCompare.showCommitsPanel` to select a contiguous
 range of commits, optionally including uncommitted changes. These selection
 checkboxes filter the comparison; file checkboxes track review progress. A
 historical comparison disables discard actions.
@@ -166,7 +182,7 @@ Find all settings by searching for `gitTreeCompare` in VS Code Settings.
 | `orca.enabled` | `true` | Enable inline comments for Orca terminal agents. |
 | `orca.cliPath` | Automatic | Override the Orca CLI executable in user settings. |
 | `showCheckboxes` | `false` | Track reviewed files and folders. |
-| `showCommitsPanel` | `false` | Filter changes by a contiguous commit range. |
+| `showCommitsPanel` | `false` | Show the optional Commit Range filter, alongside the review panes. |
 | `deemphasizedPaths` | `[]` | Additional globs for gray files and collapsed folders. |
 | `respectLinguistGenerated` | `true` | Recognize generated-file attributes. |
 | `diffMode` | `merge` | Compare against the common ancestor, or use `full`. |

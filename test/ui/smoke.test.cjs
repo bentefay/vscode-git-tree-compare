@@ -79,6 +79,14 @@ describe('Packaged VSIX', function () {
         const control = await new ActivityBar().getViewControl('Git Tree Compare');
         assert.ok(control, 'Packaged extension must contribute its activity bar view');
         await control.openView();
+        for (const label of ['Compare From', 'PR Commits']) {
+            const header = await browser.driver.wait(async () => {
+                const matches = await browser.driver.findElements(By.css(`.pane-header[aria-label^="${label}"][aria-label$=" Section"]`));
+                return matches[0] || false;
+            }, 10000, `${label} must be contributed`);
+            assert.equal(await header.getAttribute('aria-expanded'), 'false', `${label} must start collapsed`);
+        }
+        await browser.takeScreenshot('review-panes-collapsed');
         const file = await browser.driver.wait(async () => {
             const matches = await browser.driver.findElements(By.css('[aria-label*="example.txt"]'));
             for (const element of matches) if (await element.isDisplayed()) return element;
@@ -148,19 +156,22 @@ describe('Packaged VSIX', function () {
             'Generated output should have the muted theme color once decorations arrive');
         await new Workbench().executeCommand('Git Tree Compare: Refresh');
         assert.equal(await (await row('generated')).getAttribute('aria-expanded'), 'true', 'Refresh must preserve manual expansion');
-        await browser.driver.actions().contextClick(await row('manual.ts')).perform();
-        await browser.driver.wait(async () => {
-            const items = await browser.driver.findElements(By.css('.context-view .action-label'));
-            for (const item of items) if ((await item.getText()).includes('Open Containing Folder')) return true;
-            return false;
-        }, 5000, 'Existing local files must offer Open Containing Folder');
-        await browser.driver.actions().clear();
-        await browser.driver.actions().sendKeys(Key.ESCAPE).perform();
-        await browser.driver.wait(async () => {
-            const blockers = await browser.driver.findElements(By.css('.context-view-block'));
-            for (const blocker of blockers) if (await blocker.isDisplayed()) return false;
-            return true;
-        }, 5000, 'Context menu must close before continuing');
+        for (const label of ['manual.ts', 'generated']) {
+            await browser.driver.actions().contextClick(await row(label)).perform();
+            await browser.driver.wait(async () => {
+                const items = await browser.driver.findElements(By.css('.context-view .action-label'));
+                for (const item of items) if ((await item.getText()).includes('Open Containing Folder')) return true;
+                return false;
+            }, 5000, 'Existing local files and folders must offer Open Containing Folder');
+            if (label === 'generated') { await browser.takeScreenshot('folder-containing-menu'); }
+            await browser.driver.actions().clear();
+            await browser.driver.actions().sendKeys(Key.ESCAPE).perform();
+            await browser.driver.wait(async () => {
+                const blockers = await browser.driver.findElements(By.css('.context-view-block'));
+                for (const blocker of blockers) if (await blocker.isDisplayed()) return false;
+                return true;
+            }, 5000, 'Context menu must close before continuing');
+        }
     });
     it('reveals included editor and inactive-tab files in the comparison view', async () => {
         const title = 'Reveal in Git Tree Compare View';
@@ -179,6 +190,20 @@ describe('Packaged VSIX', function () {
                 if (await item.isDisplayed() && await item.getText() === title) return item;
             }
             return false;
+        };
+        const selectReveal = async message => {
+            const item = await browser.driver.wait(menuItem, 10000, message);
+            // Use a complete pointer gesture: a direct WebElement click can
+            // leave VS Code's freshly opened menu focused without activating it.
+            await browser.driver.actions().move({ origin: item }).click().perform();
+            await browser.driver.wait(async () => {
+                try { return !await menuItem(); }
+                catch (error) {
+                    // The menu and its shadow root can disappear mid-query.
+                    if (!['StaleElementReferenceError', 'DetachedShadowRootError', 'NoSuchShadowRootError'].includes(error.name)) { throw error; }
+                    return false;
+                }
+            }, 10000, 'Reveal must close the context menu');
         };
         const tab = async name => browser.driver.wait(async () => {
             for (const item of await browser.driver.findElements(By.css('.tab'))) {
@@ -200,7 +225,7 @@ describe('Packaged VSIX', function () {
             return false;
         }, 10000);
         await browser.driver.actions().contextClick(editor).perform();
-        await (await browser.driver.wait(menuItem, 10000, 'Included editor must offer reveal')).click();
+        await selectReveal('Included editor must offer reveal');
         await browser.driver.wait(async () => (await row('output.ts')).getAttribute('aria-selected').then(value => value === 'true'), 10000);
         await browser.takeScreenshot('reveal-from-editor');
 
@@ -212,7 +237,7 @@ describe('Packaged VSIX', function () {
         await (await new ActivityBar().getViewControl('Explorer')).openView();
         // Right-click a different tab: the command must use that tab's URI.
         await browser.driver.actions().contextClick(await tab('output.ts')).perform();
-        await (await browser.driver.wait(menuItem, 10000, 'Included inactive tab must offer reveal')).click();
+        await selectReveal('Included inactive tab must offer reveal');
         await browser.driver.wait(async () => (await row('output.ts')).getAttribute('aria-selected').then(value => value === 'true'), 10000);
         await browser.takeScreenshot('reveal-from-inactive-tab');
     });
@@ -339,6 +364,67 @@ describe('Packaged VSIX', function () {
             return false;
         }, 10000, 'The restored draft must contain the original feedback');
         await browser.takeScreenshot('orca-draft-restored');
+    });
+
+    it('selects review and branch bases from collapsed panes without losing the full PR timeline', async () => {
+        await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
+        const section = async label => {
+            const header = await browser.driver.wait(async () => {
+                const headers = await browser.driver.findElements(By.css(`.pane-header[aria-label^="${label}"][aria-label$=" Section"]`));
+                for (const item of headers) if (await item.isDisplayed()) return item;
+                return false;
+            }, 15000, `${label} must be ready after activation`);
+            if (await header.getAttribute('aria-expanded') !== 'true') await header.click();
+            return header.findElement(By.xpath('..'));
+        };
+        const inSection = async (pane, label) => browser.driver.wait(async () => {
+            for (const candidate of await pane.findElements(By.css('.monaco-list-row'))) {
+                for (const name of await candidate.findElements(By.css('.label-name'))) {
+                    if (await name.getText() === label && await candidate.isDisplayed()) return candidate;
+                }
+            }
+            return false;
+        }, 15000, `${label} must be visible in its pane`);
+        const bases = await section('Compare From');
+        await inSection(bases, 'Latest review activity');
+        await inSection(bases, 'Branch merge-base');
+        await inSection(bases, 'main');
+        const origin = await inSection(bases, 'origin/main');
+        await origin.click();
+        await browser.takeScreenshot('review-base-candidates');
+        const commits = await section('PR Commits');
+        const feature = await inSection(commits, 'Feature');
+        await feature.click();
+        const main = await section('repository');
+        await browser.driver.wait(async () => {
+            const labels = await main.findElements(By.css('.monaco-list-row .label-name'));
+            const names = await Promise.all(labels.map(label => label.getText()));
+            return names.some(name => name.startsWith('Feature ·')) && !names.includes('committed.txt') && names.includes('example.txt');
+        }, 15000, 'Choosing HEAD must show only changes after HEAD');
+        assert.ok(await inSection(commits, 'Feature'), 'The base commit remains in the PR timeline');
+        await browser.takeScreenshot('review-base-selected-commit');
+        await browser.quit();
+        const profile = path.join(process.env.TEST_RESOURCES, 'restart-profile');
+        await fs.rm(profile, { recursive: true, force: true });
+        await fs.cp(path.join(process.env.TEST_RESOURCES, 'settings'), profile, {
+            recursive: true,
+            filter: async source => {
+                if (path.basename(source) === 'DevToolsActivePort') return false;
+                const stat = await fs.lstat(source);
+                return stat.isFile() || stat.isDirectory();
+            },
+        });
+        await browser.start(process.env.GTC_UI_LAUNCHER, [process.env.GTC_TEST_REPOSITORY]);
+        await browser.waitForWorkbench();
+        await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
+        const restored = await section('repository');
+        await browser.driver.wait(async () => {
+            const labels = await restored.findElements(By.css('.monaco-list-row .label-name'));
+            return (await Promise.all(labels.map(label => label.getText()))).some(name => name.startsWith('Feature ·'));
+        }, 15000, 'The exact chosen base must survive restarting VS Code');
+        await inSection(await section('Compare From'), 'Latest review activity');
+        await browser.takeScreenshot('review-base-restored');
+        await new Workbench().executeCommand('Git Tree Compare: Reset Comparison Base');
     });
 
 });

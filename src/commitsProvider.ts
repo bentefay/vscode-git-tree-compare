@@ -32,6 +32,7 @@ export interface ComparisonInfo {
     repoRoot: string;
     mergeBase: string;
     headCommit: string;
+    comparisonBase?: string;
 }
 
 /**
@@ -50,7 +51,7 @@ export interface ComparisonHost {
     refreshCommitsComparison(): Promise<void>;
     getBranchCommits(): Promise<ICommitInfo[]>;
     getUncommittedSummary(): Promise<IUncommittedSummary>;
-    setCommitFilter(spec: CommitFilterSpec): Promise<void>;
+    setCommitFilter(spec: CommitFilterSpec, clearReviewBase?: boolean): Promise<void>;
 }
 
 const UNCOMMITTED_ID = 'uncommitted';
@@ -93,6 +94,7 @@ export class CommitsTreeProvider implements TreeDataProvider<CommitListElement>,
 
     // Identifies the current comparison; used to detect when the commit set changed.
     private commitSetKey = '';
+    private selectedReviewBase: string | undefined;
 
     // The view backing this provider; used to gate auto-refresh on visibility.
     private treeView: TreeView<CommitListElement> | undefined;
@@ -101,7 +103,7 @@ export class CommitsTreeProvider implements TreeDataProvider<CommitListElement>,
 
     constructor(private readonly host: ComparisonHost, private readonly outputChannel: OutputChannel) {
         this.disposables.push(this.host.onDidChangeComparison(() => {
-            this.refresh().catch(e => this.log('Failed to refresh commits list', e));
+            if (this.treeView?.visible) { this.refresh().catch(e => this.log('Failed to refresh commits list', e)); }
         }));
         this.disposables.push(this.host.onDidChangeRepository(() => this.scheduleAutoRefresh()));
     }
@@ -116,7 +118,7 @@ export class CommitsTreeProvider implements TreeDataProvider<CommitListElement>,
                 this.autoRefresh().catch(err => this.log('Failed to refresh commits list on show', err));
             }
         }));
-        this.refresh().catch(e => this.log('Failed to initialise commits list', e));
+        if (treeView.visible) { this.refresh().catch(e => this.log('Failed to initialise commits list', e)); }
     }
 
     // Debounced auto-refresh triggered by repository changes. Skips work when the
@@ -162,6 +164,7 @@ export class CommitsTreeProvider implements TreeDataProvider<CommitListElement>,
     }
 
     async refresh(): Promise<void> {
+        if (!this.treeView?.visible) { return; }
         const comparison = this.host.getCommitsComparison();
         if (!comparison) {
             this.commits = [];
@@ -174,6 +177,10 @@ export class CommitsTreeProvider implements TreeDataProvider<CommitListElement>,
 
         const key = `${comparison.repoRoot}\0${comparison.mergeBase}..${comparison.headCommit}`;
         const keyChanged = key !== this.commitSetKey;
+        if (comparison.comparisonBase !== this.selectedReviewBase) {
+            if (comparison.comparisonBase) { this.checked.clear(); }
+            this.selectedReviewBase = comparison.comparisonBase;
+        }
 
         if (keyChanged) {
             this.commits = await this.host.getBranchCommits();
@@ -244,7 +251,7 @@ export class CommitsTreeProvider implements TreeDataProvider<CommitListElement>,
     }
 
     private applyFilter(): Promise<void> {
-        return this.host.setCommitFilter(this.computeSpec());
+        return this.host.setCommitFilter(this.computeSpec(), true);
     }
 
     private async handleCheckboxChange(e: TreeCheckboxChangeEvent<CommitListElement>) {

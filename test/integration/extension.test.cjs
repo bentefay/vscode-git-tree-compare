@@ -527,10 +527,16 @@ describe('Repository review workflow', () => {
         const folderPath = path.join(root, 'generated');
         const stable = path.join(folderPath, 'two.ts'), changing = path.join(folderPath, 'one.ts');
         await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        await eventually(() => !provider.refreshInProgress);
         const folder = await find(folderPath), stableNode = await find(stable), changingNode = await find(changing);
         const previous = provider.reviewStore.get(comparison.keyForReview(changingNode));
         const original = comparison.fingerprinter.fingerprint.bind(comparison.fingerprinter);
         let injected = false;
+        // Keep the injected edit inside the approval's hash operation. A
+        // background validator hashing the same path first would test a different
+        // scenario (the file already changed before approval began).
+        const refreshReviews = comparison.refreshReviews.bind(comparison);
+        comparison.refreshReviews = async () => {};
         comparison.fingerprinter.fingerprint = async (...args) => {
             const result = await original(...args);
             if (!injected && args[0].dstAbsPath === changing) {
@@ -548,7 +554,10 @@ describe('Repository review workflow', () => {
             assert.equal(checked(changingNode), false);
             assert.equal(checked(folder), false);
             assert.deepEqual(provider.reviewStore.get(comparison.keyForReview(changingNode)), previous);
-        } finally { comparison.fingerprinter.fingerprint = original; }
+        } finally {
+            comparison.fingerprinter.fingerprint = original;
+            comparison.refreshReviews = refreshReviews;
+        }
     });
 
     it('retains the approved hash when an agent edits during fingerprint calculation', async () => {
@@ -596,6 +605,35 @@ describe('Repository review workflow', () => {
                 assert.equal(calls.length, 2, 'A removed file must not launch the file manager');
             } finally { await fs.writeFile(reviewPath, saved); }
         } finally { vscode.commands.executeCommand = original; }
+    });
+
+    it('reveals local folders and rejects folders removed after the menu opened', async () => {
+        const folderPath = path.join(root, 'generated');
+        const moved = path.join(root, 'generated-moved');
+        const folder = await find(folderPath);
+        assert.equal(provider.getTreeItem(folder).contextValue, 'folder-local');
+        const original = vscode.commands.executeCommand;
+        const calls = [];
+        try {
+            vscode.commands.executeCommand = async (name, ...args) => {
+                if (name === 'revealFileInOS' || name === 'gitTreeCompare.focus') { calls.push([name, ...args]); return; }
+                return original(name, ...args);
+            };
+            await provider.openContainingFolder(folder);
+            assert.equal(calls[0][0], 'gitTreeCompare.focus');
+            assert.equal(calls[1][0], 'revealFileInOS');
+            assert.equal(calls[1][1].fsPath, folderPath, 'Reveal the selected folder in its parent');
+            await fs.rename(folderPath, moved);
+            try {
+                await provider.openContainingFolder(folder);
+                assert.equal(calls.length, 2, 'A missing folder must not launch the file manager');
+                await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+                assert.equal(provider.getTreeItem(folder).contextValue, 'folder');
+            } finally { await fs.rename(moved, folderPath); }
+        } finally {
+            vscode.commands.executeCommand = original;
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        }
     });
 
     it('records progress in VS Code extension storage', async () => {
@@ -682,7 +720,7 @@ describe('Repository review workflow', () => {
         const originalCommand = vscode.commands.executeCommand;
         let warning, opened = false;
         try {
-            await provider.reviewStore.setMany([{ key: comparison.keyForReview(node), fingerprint: record.fingerprint, commit: 'f'.repeat(40) }]);
+            await provider.reviewStore.setMany([{ key: comparison.keyForReview(node), fingerprint: record.fingerprint, contentOnly: record.contentOnly, commit: 'f'.repeat(40) }]);
             vscode.window.showWarningMessage = async message => { warning = message; };
             vscode.commands.executeCommand = async (command, ...args) => {
                 if (command === 'vscode.diff') { opened = true; return; }
@@ -694,7 +732,7 @@ describe('Repository review workflow', () => {
         } finally {
             vscode.window.showWarningMessage = originalWarning;
             vscode.commands.executeCommand = originalCommand;
-            await provider.reviewStore.setMany([{ key: comparison.keyForReview(node), fingerprint: record.fingerprint, commit: record.commit }]);
+            await provider.reviewStore.setMany([{ key: comparison.keyForReview(node), fingerprint: record.fingerprint, contentOnly: record.contentOnly, commit: record.commit }]);
         }
     });
 
@@ -796,5 +834,179 @@ describe('Orca inline review comments', () => {
         assert.equal((await calls()).filter(a => a[1] === 'send').length, count);
         assert.equal(thread.comments[0].body, 'Possibly delivered');
         await vscode.commands.executeCommand('gitTreeCompare.orca.delete', thread);
+    });
+});
+
+describe('Review base navigation', () => {
+    let provider, comparison;
+    const file = path.join(root, 'navigation-review.txt');
+    async function find(absolute, parent) {
+        for (const node of await provider.getChildren(parent)) {
+            if (node.dstAbsPath === absolute) return node;
+            if (provider.getTreeItem(node).collapsibleState !== vscode.TreeItemCollapsibleState.None) {
+                const child = await find(absolute, node); if (child) return child;
+            }
+        }
+    }
+    before(async () => {
+        ({ provider } = await vscode.extensions.getExtension('bentefay.git-tree-compare').activate());
+        await vscode.commands.executeCommand('gitTreeCompare.bases.reset');
+        comparison = provider.activeComparison;
+    });
+    after(async () => { await provider.resetReviewBase(); });
+
+    it('keeps approvals and checkpoint history while selecting exact bases and switching branches', async () => {
+        const originalBranch = git('branch', '--show-current');
+        const initialHead = git('rev-parse', 'HEAD');
+        const makeCommit = async text => {
+            await fs.writeFile(file, text);
+            git('add', '--', 'navigation-review.txt'); git('commit', '-m', text.trim());
+            await provider.gitApi.getRepository(vscode.Uri.file(root)).status();
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+            return git('rev-parse', 'HEAD');
+        };
+        const approve = async () => {
+            const node = await find(file); assert.ok(node);
+            await eventually(async () => {
+                await provider.handleChangeCheckboxState({ items: [[node, vscode.TreeItemCheckboxState.Checked]] });
+                return provider.getTreeItem(node).checkboxState === vscode.TreeItemCheckboxState.Checked;
+            });
+            await provider.reviewHistory.flush();
+            return node;
+        };
+        const first = await makeCommit('first review\n');
+        await approve();
+        const second = await makeCommit('second review\n');
+        const node = await approve();
+        const scope = comparison.reviewHistoryScope();
+        const approved = provider.reviewStore.get(comparison.keyForReview(node));
+        assert.equal(approved.contentOnly, true);
+        const history = await provider.reviewHistory.list(scope);
+        assert.ok(history.some(r => r.commit === first));
+        assert.ok(history.some(r => r.commit === second));
+        let context = provider.getReviewNavigationContext();
+        const page = await provider.loadReviewPage(context, 'bases', 0);
+        const candidates = page.nodes.flatMap(n => n.children || []).filter(n => n.candidate);
+        assert.ok(candidates.some(n => n.label === 'origin/main'));
+        assert.ok(candidates.some(n => n.label === 'main'));
+        const checkpoint = candidates.find(n => n.candidate.commit === first);
+        assert.ok(checkpoint);
+        await provider.chooseReviewBase(provider.getReviewNavigationContext(), checkpoint.candidate);
+        assert.equal(comparison.getDiffEndpoints().leftRef, first);
+        const visible = await find(file);
+        const fpContext = await comparison.fingerprintContext();
+        const actualHash = await comparison.fingerprinter.fingerprint(visible, fpContext.left, fpContext.right, fpContext.fileMode, true);
+        assert.equal(actualHash, approved.fingerprint, 'The current content hash must match the saved approval');
+        await eventually(() => provider.getTreeItem(visible).checkboxState === vscode.TreeItemCheckboxState.Checked);
+        assert.equal(provider.getTreeItem(visible).checkboxState, vscode.TreeItemCheckboxState.Checked,
+            'A different left side must not invalidate unchanged approved contents');
+        assert.equal(provider.reviewStore.get(comparison.keyForReview(node)).fingerprint, approved.fingerprint);
+        const timeline = await provider.loadReviewPage(provider.getReviewNavigationContext(), 'commits', 0);
+        assert.ok(timeline.nodes.some(n => n.candidate?.commit === first), 'The selected base stays in the full PR timeline');
+        assert.ok(timeline.nodes.some(n => n.candidate?.commit === second));
+        assert.ok(timeline.nodes.some(n => n.candidate?.commit === initialHead));
+        const savedKey = comparison.selectionStorageKey();
+        assert.equal(comparison.savedSelections.get(savedKey).commit, first);
+        const stale = provider.getReviewNavigationContext();
+        const originalGet = provider.globalState.get.bind(provider.globalState);
+        provider.globalState.get = (key, ...args) => key === savedKey ? undefined : originalGet(key, ...args);
+        try {
+        git('switch', '-c', 'navigation-other-branch');
+        await provider.gitApi.getRepository(vscode.Uri.file(root)).status();
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        assert.equal(comparison.selectedBase, undefined);
+        assert.deepEqual(await provider.reviewHistory.list(comparison.reviewHistoryScope()), []);
+        await provider.chooseReviewBase(stale, checkpoint.candidate);
+        assert.equal(comparison.selectedBase, undefined, 'A node from another branch must not change the base');
+        git('switch', originalBranch);
+        await provider.gitApi.getRepository(vscode.Uri.file(root)).status();
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        assert.equal(comparison.selectedBase.commit, first, 'A delayed older Memento echo must not erase the explicit base');
+        } finally { provider.globalState.get = originalGet; }
+        await eventually(async () => provider.getTreeItem(await find(file)).checkboxState === vscode.TreeItemCheckboxState.Checked);
+        await provider.reviewHistory.record(scope, [{ key: comparison.keyForReview(node), commit: 'f'.repeat(40), reviewedAt: Date.now() }]);
+        const missing = (await provider.loadReviewPage(provider.getReviewNavigationContext(), 'bases', 0)).nodes[0].children
+            .find(n => n.candidate?.commit === 'f'.repeat(40));
+        assert.equal(missing.candidate.available, false);
+        await provider.chooseReviewBase(provider.getReviewNavigationContext(), missing.candidate);
+        assert.equal(comparison.selectedBase.commit, first, 'Unavailable history cannot silently select a different base');
+        assert.ok((await provider.reviewHistory.list(scope)).some(r => r.commit === first));
+    });
+
+    it('can approve a file while navigation metadata is still loading', async () => {
+        const original = comparison.navigation.bases.bind(comparison.navigation);
+        let release, entered = false, finished = false;
+        const gate = new Promise(resolve => { release = resolve; });
+        comparison.navigation.bases = async (...args) => { entered = true; await gate; return original(...args); };
+        const loading = provider.loadReviewPage(provider.getReviewNavigationContext(), 'bases', 0).then(() => { finished = true; });
+        let timeout;
+        try {
+            await eventually(() => entered);
+            const node = await find(file);
+            await Promise.race([
+                provider.handleChangeCheckboxState({ items: [[node, vscode.TreeItemCheckboxState.Checked]] }),
+                new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Approval waited for navigation metadata')), 3000); }),
+            ]);
+            assert.equal(provider.getTreeItem(node).checkboxState, vscode.TreeItemCheckboxState.Checked);
+            assert.equal(finished, false);
+        } finally {
+            clearTimeout(timeout); release(); await loading; comparison.navigation.bases = original;
+        }
+    });
+
+    it('keeps the base picker usable when a restored pinned commit is unavailable', async () => {
+        const originalError = vscode.window.showErrorMessage;
+        const warnings = [];
+        vscode.window.showErrorMessage = async message => { warnings.push(message); return undefined; };
+        try {
+            await comparison.saveSelectedBase({ commit: 'f'.repeat(40), label: 'Old review' });
+            comparison.selectionScope = '';
+            await comparison.updateRefs(comparison.baseRef);
+            await comparison.updateDiff(false);
+            assert.equal(comparison.selectedBase.commit, 'f'.repeat(40));
+            assert.equal(comparison.reviewFiles().length, 0, 'Never substitute another comparison');
+            assert.ok(warnings.some(message => message.includes('Reset Comparison Base')));
+            const page = await provider.loadReviewPage(provider.getReviewNavigationContext(), 'bases', 0);
+            assert.ok(page.nodes.some(n => n.id === 'branch-bases'));
+            await provider.resetReviewBase();
+            assert.equal(comparison.selectedBase, undefined);
+            assert.ok(comparison.reviewFiles().length > 0);
+        } finally { vscode.window.showErrorMessage = originalError; }
+    });
+
+    it('does no pane work while collapsed, coalesces loads, and ignores stale async results', async () => {
+        const { ReviewTreeProvider } = require('../../out/reviewViews');
+        const events = Array.from({ length: 4 }, () => new vscode.EventEmitter());
+        let context = { key: 'first', repoRoot: root, scope: 'branch-one', head: 'a'.repeat(40), target: 'origin/main', branch: 'one' };
+        let calls = 0, release;
+        const gate = new Promise(resolve => { release = resolve; });
+        const host = {
+            onDidChangeComparison: events[0].event, onDidChangeRepository: events[1].event, onDidChangeReviewHistory: events[2].event,
+            getReviewNavigationContext: () => context,
+            invalidateReviewNavigationCache() {},
+            async loadReviewPage(snapshot) { calls++; if (calls === 1) await gate; return { nodes: [{ id: snapshot.key, label: snapshot.key }] }; },
+            async chooseReviewBase() {},
+        };
+        const view = { visible: false, onDidChangeVisibility: events[3].event };
+        const pane = new ReviewTreeProvider(host, 'bases', { appendLine() {} }); pane.init(view);
+        try {
+            for (const event of events.slice(0, 3)) event.fire();
+            assert.deepEqual(await pane.getChildren(), []);
+            assert.equal(calls, 0);
+            view.visible = true;
+            const a = pane.refresh(), b = pane.refresh();
+            assert.equal(calls, 1);
+            let heartbeat = false; await new Promise(resolve => setImmediate(() => { heartbeat = true; resolve(); }));
+            assert.equal(heartbeat, true, 'A slow Git query must not block the event loop');
+            context = { ...context, key: 'second', scope: 'branch-two' };
+            release(); await Promise.all([a, b]);
+            const children = await pane.getChildren();
+            assert.deepEqual(children.map(n => n.id), ['second']);
+            const count = calls;
+            await pane.getChildren();
+            assert.equal(calls, count, 'Unchanged reads use cached rows');
+            view.visible = false; context = { ...context, key: 'third' }; events[1].fire();
+            await pane.refresh(); assert.equal(calls, count);
+        } finally { release(); pane.dispose(); events.forEach(event => event.dispose()); }
     });
 });

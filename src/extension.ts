@@ -2,11 +2,15 @@ import { ExtensionContext, window, Disposable, commands, extensions, workspace }
 
 import { NAMESPACE } from './constants'
 import { GitTreeCompareProvider } from './treeProvider';
+import { ReviewTreeProvider } from './reviewViews';
 import { CommitsTreeProvider } from './commitsProvider';
+
 import { createGit } from './gitHelper';
 import { toDisposable } from './git/util';
 import { GitExtension } from './typings/git';
 import { OrcaComments } from './orcaComments';
+
+let flushReviewHistory: (() => Promise<void>) | undefined;
 
 export async function activate(context: ExtensionContext) {
     const disposables: Disposable[] = [];
@@ -54,8 +58,18 @@ export async function activate(context: ExtensionContext) {
     const orcaComments = new OrcaComments(context, git, gitApi);
     disposables.push(orcaComments);
 
-    // The "Commits" panel is optional and disabled by default; create/dispose it
-    // according to the gitTreeCompare.showCommitsPanel setting.
+    flushReviewHistory = () => provider!.reviewHistory.flush();
+    const baseProvider = new ReviewTreeProvider(provider, 'bases', outputChannel);
+    const basesTreeView = window.createTreeView(NAMESPACE + 'Bases', { treeDataProvider: baseProvider });
+    disposables.push(baseProvider, basesTreeView);
+    baseProvider.init(basesTreeView);
+    const historyProvider = new ReviewTreeProvider(provider, 'commits', outputChannel);
+    const historyTreeView = window.createTreeView(NAMESPACE + 'History', { treeDataProvider: historyProvider });
+    disposables.push(historyProvider, historyTreeView);
+    historyProvider.init(historyTreeView);
+
+    // Both native panes default to collapsed. VS Code remembers user expansion.
+    // Neither provider loads Git metadata until its view is visible.
     let commitsDisposables: Disposable[] = [];
     const updateCommitsPanel = () => {
         const enabled = workspace.getConfiguration(NAMESPACE).get<boolean>('showCommitsPanel', false);
@@ -194,16 +208,18 @@ export async function activate(context: ExtensionContext) {
         return provider!.openChangesWithDifftool(node);
     });
 
-    register(NAMESPACE + '.commits.selectAll', () => {
-        return commitsProvider?.selectAll();
-    });
-    register(NAMESPACE + '.commits.deselectAll', () => {
-        return commitsProvider?.deselectAll();
-    });
+    register(NAMESPACE + '.commits.selectAll', () => commitsProvider?.selectAll());
+    register(NAMESPACE + '.commits.deselectAll', () => commitsProvider?.deselectAll());
     register(NAMESPACE + '.commits.refresh', () => {
         // Refresh the whole comparison; the commits list updates via onDidChangeComparison.
         return provider!.manualRefresh();
     });
+    register(NAMESPACE + '.bases.selectBase', node => baseProvider.select(node));
+    register(NAMESPACE + '.commits.selectBase', node => historyProvider.select(node));
+    register(NAMESPACE + '.bases.refresh', () => provider!.refreshReviewNavigation());
+    register(NAMESPACE + '.bases.reset', () => provider!.resetReviewBase());
 
-    return { provider, orcaComments };
+    return { provider, orcaComments, baseProvider, historyProvider, get commitsProvider() { return commitsProvider; } };
 }
+
+export async function deactivate(): Promise<void> { await flushReviewHistory?.(); }

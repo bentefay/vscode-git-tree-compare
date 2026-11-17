@@ -7,14 +7,14 @@ changes only affect whether that fingerprint currently matches. Checking a new
 version replaces the approval, and explicitly unchecking clears it. Folder
 checkboxes apply to all changed descendants, including collapsed children.
 
-Fingerprints cover both sides of the comparison: exact file bytes, paths, Git
-modes, symlink targets and submodule commits. Unrelated commits and timestamp-only
-changes do not invalidate a review. Dirty or uninitialized submodules remain
-unchecked until their changes are committed and their checkout is available. A different commit selection or comparison
-base can legitimately show a file unchecked. Unsaved editor changes invalidate
-checks immediately; save before marking a file reviewed. Restoring exactly the
-approved comparison restores its check. “Hide reviewed files” reveals files again
-when they change.
+New approval fingerprints cover the reviewed side: exact file bytes, destination
+path, Git mode, symlink target or submodule commit. Changing the comparison base,
+unrelated commits and timestamp-only changes do not invalidate these approvals.
+Older fingerprints remain supported using their original two-sided semantics;
+approve again to upgrade them. Dirty or uninitialized submodules remain unchecked.
+Unsaved editor changes invalidate checks immediately; save before marking a file
+reviewed. Restoring approved contents restores its check. “Hide reviewed files”
+reveals files again when they change.
 
 Approving a file validates and saves that file without waiting for unrelated
 agent edits or rehashing every previous approval. Folder approvals apply to each
@@ -53,9 +53,7 @@ For working-tree reviews the baseline is HEAD at approval time. For a historical
 comparison it is the selected right commit. No file snapshots or extra Git commits
 are created. Uncommitted changes that existed when you approved are also included
 in the incremental diff; files absent at the recorded commit appear entirely
-added. A changed PR base can require re-review while this incremental diff is
-empty, since approval fingerprints cover both comparison sides. Renamed paths
-have a separate review key, as before.
+added. Renamed destination paths have a separate review key, as before.
 
 Commit baselines survive restarts, filters and branch switches, and sync with
 review progress. Older approvals retain their checks and colour behaviour but
@@ -73,6 +71,37 @@ Customize the colour using `gitTreeCompare.changedSinceReviewForeground` inside
 VS Code's `workbench.colorCustomizations` setting. Binary files and submodules
 retain their usual VS Code limitations; the incremental action is for files,
 not submodule directories.
+
+## Review rounds and comparison bases
+
+**Compare From** offers recent review checkpoints and likely branch bases.
+**PR Commits** lists the complete branch history relative to its target's merge-base;
+clicking a commit compares changes *after* it with the working tree. Both panes
+start collapsed, and VS Code remembers your layout. The optional **Commit Range**
+pane retains the original contiguous-range filter.
+
+A checkpoint records that files were checked at a commit, not that the whole
+commit or PR was approved. It keeps a count of distinct file keys and their most
+recent approval time at that commit. Checkpoints are retained after reapproval,
+unchecking, rebases and branch switches. The history syncs with opaque repository,
+branch and file identities; paths and file contents are not uploaded. Existing
+saved approvals are imported when you first expand a review pane. Older review
+points already overwritten before this feature cannot be reconstructed.
+
+Branch merge-base is the common ancestor with the current comparison target.
+Branch-tip entries use exact local or remote-tracking tips, which can include
+changes on the target branch that are absent from the PR. The selected SHA is
+pinned per local checkout and branch. **Reset Comparison Base** restores the normal
+comparison. Choosing a base never checks out, fetches or creates a Git commit.
+Unavailable checkpoints remain visible and disabled; no substitute commit is used.
+
+Collapsed panes perform no history Git queries. Expanded panes cache and share
+metadata requests, page commits in groups of 100 and checkpoints in groups of 50,
+and do not compute per-commit file statistics. Ref tips refresh on expansion or
+manual Refresh; unchanged file events reuse cached rows. Git queries and history
+storage are asynchronous, long history imports yield to the extension event loop,
+and late results for another repository or branch are discarded. Checkpoint writes
+run independently of the checkbox queue after the check is displayed.
 
 ## Reduce review noise
 

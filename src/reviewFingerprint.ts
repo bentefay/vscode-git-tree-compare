@@ -120,16 +120,16 @@ export class ReviewFingerprinter {
         return { path: file, mode, kind, contentHash };
     }
 
-    async fingerprint(file: IDiffStatus, leftTree: string, rightTree: string | null, fileMode: boolean): Promise<string> {
+    async fingerprint(file: IDiffStatus, leftTree: string, rightTree: string | null, fileMode: boolean, contentOnly = false): Promise<string> {
         const relative = (absolute: string) => {
             const rel = path.relative(this.repository.root, absolute).split(path.sep).join('/');
             if (!rel || rel === '..' || rel.startsWith('../') || path.isAbsolute(rel)) { throw new Error('Path outside repository'); }
             return rel;
         };
-        const before = await this.treeSide(leftTree, relative(file.srcAbsPath));
+        const before = contentOnly ? undefined : await this.treeSide(leftTree, relative(file.srcAbsPath));
         const after = rightTree === null
             ? await this.worktreeSide(relative(file.dstAbsPath), file.isSubmodule, fileMode)
             : await this.treeSide(rightTree, relative(file.dstAbsPath));
-        return sha256(JSON.stringify({ version: 1, before, after }));
+        return sha256(JSON.stringify(contentOnly ? { version: 2, after } : { version: 1, before, after }));
     }
 }

@@ -24,9 +24,12 @@ import { throttle } from './git/decorators'
 import { normalizePath } from './fsUtils';
 import { API as GitAPI, Repository as GitAPIRepository } from './typings/git';
 import { Octokit } from '@octokit/rest';
-import { ReviewStore, ReviewUpdate, remoteIdentity, reviewKey } from './reviewState';
+import { ReviewStore, ReviewUpdate, remoteIdentity, reviewKey, isCommitId, sha256 } from './reviewState';
 import { ReviewFingerprinter, boundedMap } from './reviewFingerprint';
 import { deemphasizedPaths } from './reviewRules';
+import { ReviewHistory, historyScope } from './reviewHistory';
+import { ReviewNavigation, NavigationContext, BaseCandidate, ComparisonBase } from './reviewNavigation';
+import { ReviewNavigationHost, ReviewNode, ReviewPage } from './reviewViews';
 import { EMPTY_REVIEW_SCHEME, resolveReviewCommit, reviewFileExists } from './reviewDiff';
 
 
@@ -151,11 +154,17 @@ class RepositoryComparison {
     checkboxStates = new Map<string, CheckboxStateInfo>();
     deemphasized = new Set<string>();
     localFiles = new Set<string>();
+    localFolders = new Set<string>();
     reviewEpoch = 0;
     private reviewFileEpochs = new Map<string, number>();
     private reviewIdentity = '';
     private syncReviews = false;
     readonly fingerprinter: ReviewFingerprinter;
+    readonly navigation: ReviewNavigation;
+    selectedBase: ComparisonBase | undefined;
+    private unavailableBase: string | undefined;
+    private selectionScope = "";
+    private readonly savedSelections = new Map<string, ComparisonBase | undefined>();
     searchFilter: string | undefined = undefined;
 
     // Restricts the diff to a subset of commits selected in the commits list.
@@ -180,6 +189,7 @@ class RepositoryComparison {
         readonly isOutsideWorkspace: boolean) {
         this.treeRoot = this.computeTreeRoot();
         this.fingerprinter = new ReviewFingerprinter(repository);
+        this.navigation = new ReviewNavigation(repository);
     }
 
     reviewFiles(): IDiffStatus[] {
@@ -189,6 +199,25 @@ class RepositoryComparison {
     keyForReview(file: IDiffStatus): string {
         return reviewKey(this.reviewIdentity, this.headName ?? `detached:${this.headCommit}`,
             path.relative(this.repoRoot, file.dstAbsPath).split(path.sep).join('/'), this.syncReviews);
+    }
+
+    reviewHistoryScope(): string {
+        return historyScope(this.reviewIdentity, this.headName ?? `detached:${this.headCommit}`, this.syncReviews);
+    }
+
+    selectionStorageKey(): string {
+        return 'reviewBase.v1.' + sha256(JSON.stringify([this.repoRoot, this.headName ?? `detached:${this.headCommit}`]));
+    }
+
+    async saveSelectedBase(base: ComparisonBase | undefined, key = this.selectionStorageKey()): Promise<void> {
+        // Memento may echo an older snapshot after an awaited update. Keep our
+        // latest explicit choice authoritative during branch switches.
+        this.savedSelections.set(key, base);
+        await this.host.globalState.update(key, base);
+    }
+
+    get displayBase(): string {
+        return this.selectedBase ? `${this.selectedBase.label} · ${this.selectedBase.commit.slice(0, 8)}` : this.baseRef;
     }
 
     isDirty(file: string): boolean {
@@ -251,7 +280,9 @@ class RepositoryComparison {
 
     async fingerprintContext() {
         const { leftRef, rightRef } = this.getDiffEndpoints();
-        const left = await this.fingerprinter.resolve(leftRef);
+        // Legacy approvals include the original PR base. Selecting a review point
+        // must not change their validation context. New approvals hash only the right side.
+        const left = await this.fingerprinter.resolve(this.selectedBase ? this.mergeBase : leftRef);
         const right = rightRef === null ? null : await this.fingerprinter.resolve(rightRef);
         const mode = await this.repository.exec(['config', '--get', 'core.filemode'], { log: false }).catch(() => ({ stdout: 'true' }));
         return { left, right, fileMode: mode.stdout.trim() !== 'false' };
@@ -282,7 +313,7 @@ class RepositoryComparison {
         const checked = await boundedMap(candidates, async file => {
             if (this.isDirty(file.dstAbsPath)) { return { file, fingerprint: undefined }; }
             try {
-                const fingerprint = await this.fingerprinter.fingerprint(file, context.left, context.right, context.fileMode);
+                const fingerprint = await this.fingerprinter.fingerprint(file, context.left, context.right, context.fileMode, records[this.keyForReview(file)]?.contentOnly);
                 return { file, fingerprint };
             } catch (error: any) {
                 this.host.log(`Could not validate review: ${file.dstAbsPath}`, error);
@@ -328,6 +359,17 @@ class RepositoryComparison {
             try { await fs.promises.lstat(file.dstAbsPath); return file.dstAbsPath; } catch { return undefined; }
         });
         this.localFiles = new Set(local.filter((file): file is string => file !== undefined));
+        const folders = new Set<string>();
+        for (const file of diff) {
+            for (let folder = path.dirname(file.dstAbsPath); folder.startsWith(this.repoRoot + path.sep); folder = path.dirname(folder)) {
+                folders.add(folder);
+            }
+        }
+        const localFolders = env.remoteName ? [] : await boundedMap([...folders], async folder => {
+            try { return (await fs.promises.stat(folder)).isDirectory() ? folder : undefined; }
+            catch { return undefined; }
+        });
+        this.localFolders = new Set(localFolders.filter((folder): folder is string => folder !== undefined));
     }
 
     private computeTreeRoot(): FolderAbsPath {
@@ -457,7 +499,7 @@ class RepositoryComparison {
         return false;
     }
 
-    async updateRefs(baseRef?: string): Promise<void> {
+    async updateRefs(baseRef?: string, allowDeepen = true): Promise<void> {
         this.host.log(`Updating refs: ${this.repoRoot}`);
         const headLastChecked = new Date();
         const HEAD = await this.repository.getHEAD();
@@ -508,7 +550,7 @@ class RepositoryComparison {
                 // sometimes the merge base cannot be determined
                 // this can be the case with shallow clones but may have other reasons
             }
-            if (!mergeBaseResult) {
+            if (!mergeBaseResult && allowDeepen) {
                 const gitApiRepo = this.host.gitApi.getRepository(Uri.file(this.repository.root));
                 if (gitApiRepo) {
                     mergeBaseResult = await tryDeepenForMergeBase(
@@ -545,6 +587,13 @@ class RepositoryComparison {
         this.headLastChecked = headLastChecked;
         this.headName = headName;
         this.headCommit = headCommit;
+        const selectionKey = this.selectionStorageKey();
+        if (this.selectionScope !== selectionKey) {
+            const stored = this.savedSelections.has(selectionKey) ? this.savedSelections.get(selectionKey)
+                : this.host.globalState.get<ComparisonBase>(selectionKey);
+            this.selectedBase = stored && isCommitId(stored.commit) && typeof stored.label === 'string' ? stored : undefined;
+            this.selectionScope = selectionKey;
+        }
         this.baseRef = baseRef;
         this.mergeBase = mergeBase;
         this.updateStoredBaseRef(baseRef);
@@ -558,7 +607,7 @@ class RepositoryComparison {
         if (this.commitFilter.kind === 'range') {
             return { leftRef: this.commitFilter.leftRef!, rightRef: this.commitFilter.rightRef ?? null };
         }
-        return { leftRef: this.mergeBase, rightRef: null };
+        return { leftRef: this.selectedBase?.commit ?? this.mergeBase, rightRef: null };
     }
 
     /** Computes the set of changed files for the active commit filter. */
@@ -574,7 +623,7 @@ class RepositoryComparison {
         }
         // Either the full comparison, or a range whose right side is the working tree.
         // Both diff against the working tree, which also brings in untracked files.
-        const leftRef = filter.kind === 'range' ? filter.leftRef! : this.mergeBase;
+        const leftRef = this.getDiffEndpoints().leftRef;
         return getDiffStatuses(this.repository, leftRef, findRenames,
             renameThreshold, omitUntrackedFiles, omitUnstagedChanges, showDiffStats);
     }
@@ -582,7 +631,7 @@ class RepositoryComparison {
     private async includeReviewedReverts(diff: IDiffStatus[]): Promise<void> {
         // Explicit commit filters retain their normal scope. The full working
         // tree includes previously reviewed paths even if reverted out of the PR.
-        if (this.commitFilter.kind !== 'all') { return; }
+        if (this.commitFilter.kind !== 'all' || this.selectedBase) { return; }
         const present = new Set(diff.map(file => file.dstAbsPath));
         const records = this.host.reviewStore.snapshot();
         const candidates: IDiffStatus[] = [];
@@ -596,7 +645,7 @@ class RepositoryComparison {
         const context = await this.fingerprintContext();
         const retained = await boundedMap(candidates, async file => {
             try {
-                const fingerprint = await this.fingerprinter.fingerprint(file, context.left, context.right, context.fileMode);
+                const fingerprint = await this.fingerprinter.fingerprint(file, context.left, context.right, context.fileMode, records[this.keyForReview(file)]?.contentOnly);
                 try { await fs.promises.lstat(file.dstAbsPath); }
                 catch (error: any) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) { file.status = 'D'; } else { throw error; } }
                 return this.isDirty(file.dstAbsPath) || records[this.keyForReview(file)].fingerprint !== fingerprint ? file : undefined;
@@ -614,8 +663,28 @@ class RepositoryComparison {
         const filesInsideTreeRoot = new Map<FolderAbsPath, IDiffStatus[]>();
         const filesOutsideTreeRoot = new Map<FolderAbsPath, IDiffStatus[]>();
 
-        const diff = await this.computeDiff();
         await this.updateReviewIdentity();
+        let diff: IDiffStatus[];
+        try {
+            diff = await this.computeDiff();
+            this.unavailableBase = undefined;
+        } catch (error) {
+            if (!this.selectedBase) { throw error; }
+            try { await resolveReviewCommit(this.repository, this.selectedBase.commit); }
+            catch {
+                // Keep the comparison loaded so its base picker and Reset action
+                // remain usable after a pinned commit is pruned or absent locally.
+                this.clearFiles();
+                if (this.unavailableBase !== this.selectedBase.commit) {
+                    this.unavailableBase = this.selectedBase.commit;
+                    void window.showErrorMessage('The selected comparison base is unavailable locally. Choose another base in Compare From or use Reset Comparison Base.');
+                }
+                if (fireChangeEvents) { this.host.fireTreeDataChange(); }
+                this.host.comparisonUpdated(this);
+                return;
+            }
+            throw error;
+        }
         await this.includeReviewedReverts(diff);
         const untrackedCount = diff.reduce((prev, cur, _) => prev + (cur.status === 'U' ? 1 : 0), 0);
         this.host.log(`${diff.length} diff entries (${untrackedCount} untracked)`);
@@ -734,7 +803,7 @@ class ChangeWorktreeItem implements RepositoryPickItem {
 
 type FolderAbsPath = string;
 
-export class GitTreeCompareProvider implements TreeDataProvider<Element>, Disposable, IComparisonHost, ComparisonHost {
+export class GitTreeCompareProvider implements TreeDataProvider<Element>, Disposable, IComparisonHost, ComparisonHost, ReviewNavigationHost {
 
     // Events
     private _onDidChangeTreeData = new EventEmitter<Element | void>();
@@ -822,6 +891,12 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
     // The ref keeps its stable id and remains expanded.
     private collapseGeneration = 0;
 
+    private readonly historyChanged = new EventEmitter<void>();
+    readonly onDidChangeReviewHistory = this.historyChanged.event;
+    readonly reviewHistory: ReviewHistory;
+    private readonly migratedHistory = new Set<string>();
+    private baseSelectionGeneration = 0;
+    private navigationRefreshEpoch = 0;
     // Other
     readonly reviewStore: ReviewStore;
     private readonly disposables: Disposable[] = [];
@@ -831,6 +906,8 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
     constructor(private readonly git: Git, readonly gitApi: GitAPI, private readonly outputChannel: OutputChannel, readonly globalState: Memento,
                 private readonly asAbsolutePath: (relPath: string) => string) {
         this.reviewStore = new ReviewStore(globalState);
+        this.reviewHistory = new ReviewHistory(globalState, () => this.historyChanged.fire());
+        this.disposables.push(this.historyChanged);
         this.readConfig();
     }
 
@@ -1014,7 +1091,148 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             repoRoot: comparison.repoRoot,
             mergeBase: comparison.mergeBase,
             headCommit: comparison.headCommit,
+            comparisonBase: comparison.selectedBase?.commit,
         };
+    }
+
+    getReviewNavigationContext(): NavigationContext | undefined {
+        const comparison = this.commitsComparison;
+        if (!comparison?.baseRef || !isCommitId(comparison.headCommit)) { return undefined; }
+        const repo = this.gitApi.getRepository(Uri.file(comparison.repoRoot));
+        const liveHead = repo?.state.HEAD;
+        const scope = comparison.reviewHistoryScope();
+        return {
+            key: JSON.stringify([comparison.repoRoot, scope, comparison.headCommit, comparison.baseRef, liveHead?.name, liveHead?.commit,
+                comparison.selectedBase, this.reviewHistory.revision, this.navigationRefreshEpoch]),
+            repoRoot: comparison.repoRoot, scope, head: comparison.headCommit,
+            branch: comparison.headName ?? 'Detached HEAD', target: comparison.baseRef,
+            selected: comparison.selectedBase,
+        };
+    }
+
+    async loadReviewPage(context: NavigationContext, kind: 'bases' | 'commits', offset: number): Promise<ReviewPage> {
+        const comparison = this.getExistingComparison(context.repoRoot);
+        if (!comparison || context.scope !== comparison.reviewHistoryScope()) { return { nodes: [] }; }
+        try { await this.refreshCommitsComparison(false, true); }
+        catch { return { nodes: [], message: 'Cannot load local comparison refs. Refresh the main comparison or fetch missing history.' }; }
+        if (context.key !== this.getReviewNavigationContext()?.key) { return { nodes: [] }; }
+        // Backfill the saved commit of existing approvals once, only when a pane
+        // is opened. New approvals append history independently of view loading.
+        if (!this.migratedHistory.has(context.scope)) {
+            this.migratedHistory.add(context.scope);
+            try {
+                const records = this.reviewStore.snapshot();
+                const files = this.reviewStore.paths();
+                for (const file of comparison.reviewFiles()) {
+                    files[comparison.keyForReview(file)] ??= {
+                        source: path.relative(comparison.repoRoot, file.srcAbsPath).split(path.sep).join('/'),
+                        destination: path.relative(comparison.repoRoot, file.dstAbsPath).split(path.sep).join('/'),
+                    };
+                }
+                const approvals = [];
+                let visited = 0;
+                for (const [key, file] of Object.entries(files)) {
+                    if (++visited % 100 === 0) { await new Promise<void>(resolve => setImmediate(resolve)); }
+                    const record = records[key];
+                    if (record?.fingerprint && record.commit && key === comparison.keyForReview({ dstAbsPath: path.join(comparison.repoRoot, file.destination) } as IDiffStatus)) {
+                        approvals.push({ key, commit: record.commit, reviewedAt: record.updatedAt });
+                    }
+                }
+                if (context.scope !== comparison.reviewHistoryScope()) {
+                    this.migratedHistory.delete(context.scope); return { nodes: [] };
+                }
+                await this.reviewHistory.record(context.scope, approvals);
+            } catch (error) { this.migratedHistory.delete(context.scope); throw error; }
+        }
+        const history = await this.reviewHistory.list(context.scope);
+        const bases = await comparison.navigation.bases(context, String(this.navigationRefreshEpoch));
+        const node = (candidate: BaseCandidate): ReviewNode => ({
+            id: `${context.scope}:${candidate.id}`, label: candidate.label,
+            description: `${candidate.commit.slice(0, 8)}${candidate.reviewedAt ? ` · ${candidate.fileCount} checked` : ''}${candidate.available ? '' : ' · unavailable'}`,
+            tooltip: `${candidate.label}\n${candidate.commit}\n${candidate.detail}\n${candidate.available
+                ? 'Use this exact commit as the left side; compare with the working tree. No checkout or fetch.'
+                : 'This commit is not available locally. Its history is retained; fetch it yourself if needed.'}`,
+            candidate, context,
+        });
+        if (kind === 'bases') {
+            const checkpoints = await comparison.navigation.checkpoints(history.slice(offset, offset + 50));
+            if (offset > 0) { checkpoints.forEach(checkpoint => { checkpoint.label = 'Earlier review activity'; }); }
+            const reviews = checkpoints.map(node);
+            if (offset > 0) { reviews.unshift({ id: 'newer-reviews', label: 'Newer review activity…', more: 'newer', context }); }
+            if (offset + 50 < history.length) { reviews.push({ id: 'more-reviews', label: 'Older review activity…', more: 'older', context }); }
+            return { nodes: [
+                { id: 'review-activity', label: 'Review activity', children: reviews },
+                { id: 'branch-bases', label: 'Branch bases', children: bases.candidates.map(node) },
+            ], message: history.length ? undefined : 'Check a file to save a review point. Branch bases are available below.' };
+        }
+        const commits = await comparison.navigation.commits(bases.mergeBase, context.head, offset);
+        const byCommit = new Map(history.map(record => [record.commit, record]));
+        const nodes = commits.slice(0, 100).map(commit => {
+            const reviewed = byCommit.get(commit.commit);
+            return node({ ...commit, ...reviewed, id: `commit:${commit.commit}`, available: true,
+                detail: `${commit.author} · ${commit.date}${reviewed ? `\n${reviewed.fileCount} files checked at this commit. This is not a whole-commit approval.` : ''}` });
+        });
+        if (offset > 0) { nodes.unshift({ id: 'newer-commits', label: 'Newer commits…', more: 'newer', context }); }
+        if (commits.length > 100) { nodes.push({ id: 'more-commits', label: 'Older commits…', more: 'older', context }); }
+        return { nodes, message: !bases.mergeBase ? 'No local merge-base found. Fetch more history to list PR commits.'
+            : commits.length ? undefined : 'No commits between the branch merge-base and HEAD.' };
+    }
+
+    async chooseReviewBase(context: NavigationContext, candidate: BaseCandidate): Promise<void> {
+        const comparison = this.commitsComparison;
+        if (!comparison || comparison.repoRoot !== context.repoRoot || comparison.reviewHistoryScope() !== context.scope ||
+            comparison.headCommit !== context.head || !candidate.available || !isCommitId(candidate.commit)) { return; }
+        const generation = ++this.baseSelectionGeneration;
+        try {
+            const commit = await resolveReviewCommit(comparison.repository, candidate.commit);
+            const head = await comparison.repository.getHEAD();
+            const currentHead = await resolveReviewCommit(comparison.repository, 'HEAD');
+            if (generation !== this.baseSelectionGeneration || this.commitsComparison !== comparison ||
+                head.name !== comparison.headName || currentHead !== context.head) { return; }
+            const previous = comparison.selectedBase;
+            const selected = { commit, label: candidate.label };
+            const storageKey = comparison.selectionStorageKey();
+            comparison.selectedBase = selected;
+            comparison.commitFilter = { kind: 'all' };
+            const signature = comparison.reviewSignature();
+            try {
+                await comparison.updateDiff(false);
+                if (generation !== this.baseSelectionGeneration || comparison.reviewHistoryScope() !== context.scope ||
+                    !await comparison.reviewContextMatches(signature)) { return; }
+                await comparison.saveSelectedBase(selected, storageKey);
+            } catch (error) {
+                if (generation === this.baseSelectionGeneration && comparison.selectedBase === selected) { comparison.selectedBase = previous; }
+                throw error;
+            }
+            this.fireTreeDataChange();
+            await this.refreshActiveDiff(comparison);
+        } catch (error: any) {
+            this.log('Could not select review base', error);
+            void window.showErrorMessage(`Cannot use this review base: ${error.message}`);
+        }
+    }
+
+    async resetReviewBase(): Promise<void> {
+        const comparison = this.commitsComparison;
+        if (!comparison) { return; }
+        ++this.baseSelectionGeneration;
+        comparison.selectedBase = undefined;
+        comparison.commitFilter = { kind: 'all' };
+        await comparison.saveSelectedBase(undefined);
+        await comparison.updateDiff(false);
+        this.fireTreeDataChange();
+        await this.refreshActiveDiff(comparison);
+    }
+
+    invalidateReviewNavigationCache(): void {
+        this.navigationRefreshEpoch++;
+        this.commitsComparison?.navigation.clear();
+    }
+
+    async refreshReviewNavigation(): Promise<void> {
+        this.invalidateReviewNavigationCache();
+        await this.refreshCommitsComparison(false);
+        this.historyChanged.fire();
     }
 
     /**
@@ -1023,7 +1241,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
      * so it stays current even while the main tree is hidden and its diff recompute is
      * paused.
      */
-    async refreshCommitsComparison(): Promise<void> {
+    async refreshCommitsComparison(allowDeepen = true, throwOnFailure = false): Promise<void> {
         const comparison = this.commitsComparison;
         if (!comparison) {
             return;
@@ -1031,7 +1249,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         try {
             if (await comparison.isHeadChanged()) {
                 const filterBefore = comparison.commitFilter;
-                await comparison.updateRefs(comparison.baseRef);
+                await comparison.updateRefs(comparison.baseRef, allowDeepen);
                 // updateRefs drops a commit selection that no longer applies. The file
                 // list still belongs to the old range at this point, and the commits
                 // list cannot recover it (setCommitFilter would see the filter already
@@ -1043,6 +1261,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             }
         } catch (e: any) {
             this.log('Refreshing the comparison for the commits list failed', e);
+            if (throwOnFailure) { throw e; }
         }
     }
 
@@ -1062,7 +1281,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         return gitGetUncommittedSummary(comparison.repository, this.omitUntrackedFiles);
     }
 
-    async setCommitFilter(spec: CommitFilterSpec): Promise<void> {
+    async setCommitFilter(spec: CommitFilterSpec, clearReviewBase = false): Promise<void> {
         const comparison = this.commitsComparison;
         if (!comparison) {
             return;
@@ -1072,10 +1291,15 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         if (spec.leftRef === EMPTY_TREE_ID) {
             spec = { ...spec, leftRef: await getEmptyTreeId(comparison.repository) };
         }
-        if (commitFilterSpecEquals(comparison.commitFilter, spec)) {
+        const resetBase = (clearReviewBase || spec.kind !== 'all') && comparison.selectedBase;
+        if (commitFilterSpecEquals(comparison.commitFilter, spec) && !resetBase) {
             return;
         }
         comparison.commitFilter = spec;
+        if (resetBase) {
+            comparison.selectedBase = undefined;
+            await comparison.saveSelectedBase(undefined);
+        }
         try {
             await comparison.updateDiff(false);
         } catch (e: any) {
@@ -1871,8 +2095,8 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
                     // previous approval. Only an explicit uncheck does that.
                     if (comparison.isDirty(file.dstAbsPath)) { dirty = true; return undefined; }
                     try {
-                        const fingerprint = await comparison.fingerprinter.fingerprint(file, context.left, context.right, context.fileMode);
-                        return { key, fingerprint, commit, path: file.isSubmodule ? undefined : {
+                        const fingerprint = await comparison.fingerprinter.fingerprint(file, context.left, context.right, context.fileMode, true);
+                        return { key, fingerprint, contentOnly: true, commit, path: file.isSubmodule ? undefined : {
                             source: path.relative(comparison.repoRoot, file.srcAbsPath).split(path.sep).join('/'),
                             destination: path.relative(comparison.repoRoot, file.dstAbsPath).split(path.sep).join('/') } };
                     } catch (error: any) {
@@ -1895,13 +2119,20 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
                     // Do not rehash every previously reviewed file on this queue.
                     if (await comparison.reviewContextMatches(signature, context) && epoch === comparison.reviewEpoch) {
                         const current = this.reviewStore.snapshot();
+                        const approvals = [];
                         for (const update of valid) {
                             const file = byKey.get(update.key)!;
                             if (!unchanged(file) || current[update.key]?.fingerprint !== update.fingerprint) { continue; }
+                            if (update.fingerprint && update.commit) {
+                                approvals.push({ key: update.key, commit: update.commit, reviewedAt: current[update.key].updatedAt });
+                            }
                             comparison.invalidateReviews(file.dstAbsPath); // supersede older background validation of this row
                             if (update.fingerprint) { comparison.checkboxStates.set(file.dstAbsPath, { state: TreeItemCheckboxState.Checked }); }
                             else { comparison.checkboxStates.delete(file.dstAbsPath); }
                         }
+                        this.fireTreeDataChange();
+                        void this.reviewHistory.record(comparison.reviewHistoryScope(), approvals)
+                            .catch(error => this.log('Could not save review history', error));
                     }
                 }
                 if (valid.length < updates.filter(update => update !== undefined).length) {
@@ -1917,9 +2148,13 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
     }
 
     async openContainingFolder(element: Element): Promise<void> {
-        if (!(element instanceof FileElement) || env.remoteName) { return; }
-        try { await fs.promises.lstat(element.dstAbsPath); }
-        catch { void window.showInformationMessage('This file is no longer available on disk.'); return; }
+        if (!(element instanceof FileElement || element instanceof FolderElement) || env.remoteName) { return; }
+        try {
+            if (element instanceof FolderElement) {
+                if (!(await fs.promises.stat(element.dstAbsPath)).isDirectory()) { throw new Error('Not a directory'); }
+            } else { await fs.promises.lstat(element.dstAbsPath); }
+        }
+        catch { void window.showInformationMessage('This file or folder is no longer available on disk.'); return; }
         // Focus our tree before invoking the Explorer command: otherwise VS Code
         // may substitute its last focused Explorer selection for the supplied URI.
         await commands.executeCommand(NAMESPACE + '.focus');
@@ -2082,6 +2317,9 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             if (element instanceof FileElement && !element.isSubmodule && comparison.localFiles.has(element.dstAbsPath)) {
                 item.contextValue = 'file-local';
             }
+            if (element instanceof FolderElement && !(element instanceof RepoRootElement) && comparison.localFolders.has(element.dstAbsPath)) {
+                item.contextValue = 'folder-local';
+            }
             if (element instanceof FileElement && comparison.changedSinceReview(element)) {
                 item.resourceUri = toTreeResourceUri(element.dstAbsPath,
                     this.iconStyle === 'fileTheme' ? element.status : undefined).with({ fragment: 'review-changed' });
@@ -2103,7 +2341,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         // loaded comparison data, without requiring folders to be expanded.
         const comparison = this.getExistingComparison(element.repositoryRoot);
         if (!comparison || element instanceof RepositoryElement) { return undefined; }
-        const ref = new RefElement(comparison.repoRoot, comparison.baseRef, this.hasFiles(comparison));
+        const ref = new RefElement(comparison.repoRoot, comparison.displayBase, this.hasFiles(comparison));
         if (element instanceof RefElement) {
             return this.showRepositoryNodes()
                 ? new RepositoryElement(comparison.repoRoot, path.basename(comparison.repoRoot), true) : undefined;
@@ -2192,13 +2430,13 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
                 return [];
             }
             // RefElement is the root, no parent to record
-            return [new RefElement(comparison.repoRoot, comparison.baseRef, this.hasFiles(comparison))];
+            return [new RefElement(comparison.repoRoot, comparison.displayBase, this.hasFiles(comparison))];
         } else if (element instanceof RepositoryElement) {
             const comparison = await this.loadComparison(element.repositoryRoot);
             if (!comparison) {
                 return [];
             }
-            const children = [new RefElement(comparison.repoRoot, comparison.baseRef, this.hasFiles(comparison))];
+            const children = [new RefElement(comparison.repoRoot, comparison.displayBase, this.hasFiles(comparison))];
             this.recordParents(element, children);
             return children;
         } else if (element instanceof RefElement) {
@@ -2443,6 +2681,10 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
                     continue;
                 }
                 try {
+                    if (oldFullDiff !== this.fullDiff) {
+                        comparison.selectedBase = undefined;
+                        await comparison.saveSelectedBase(undefined);
+                    }
                     await comparison.updateRefs(comparison.baseRef);
                     await comparison.updateDiff(false);
                 } catch (e: any) {
@@ -3002,12 +3244,14 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             throw new Error("unsupported item type");
         }
 
-        if (comparison.baseRef === baseRef) {
+        if (comparison.baseRef === baseRef && !comparison.selectedBase) {
             return;
         }
         await window.withProgress({ location: ProgressLocation.Window, title: 'Updating Tree Base' }, async _ => {
             try {
                 await comparison.updateRefs(baseRef);
+                comparison.selectedBase = undefined;
+                await comparison.saveSelectedBase(undefined);
             } catch (e: any) {
                 let msg = 'Updating the git tree base failed';
                 this.log(msg, e);
@@ -3209,6 +3453,8 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
                     const originBaseRef = `${baseRemoteName}/${baseRef}`;
                     this.log(`Updating base to: ${originBaseRef}`);
                     await comparison.updateRefs(originBaseRef);
+                    comparison.selectedBase = undefined;
+                    await comparison.saveSelectedBase(undefined);
                     await comparison.updateDiff(false);
                     this.log('Refreshing tree');
                     this.fireTreeDataChange();
