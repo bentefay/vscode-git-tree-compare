@@ -8,6 +8,7 @@ import { CommitsTreeProvider } from './commitsProvider';
 import { createGit } from './gitHelper';
 import { toDisposable } from './git/util';
 import { GitExtension } from './typings/git';
+import { EnrichmentController } from './enrichment';
 import { OrcaComments } from './orcaComments';
 
 let flushReviewHistory: (() => Promise<void>) | undefined;
@@ -57,6 +58,9 @@ export async function activate(context: ExtensionContext) {
     await provider.init(treeView);
     const orcaComments = new OrcaComments(context, git, gitApi);
     disposables.push(orcaComments);
+
+    const enrichment = new EnrichmentController(context, provider, outputChannel);
+    disposables.push(enrichment);
 
     flushReviewHistory = () => provider!.reviewHistory.flush();
     const baseProvider = new ReviewTreeProvider(provider, 'bases', outputChannel);
@@ -220,7 +224,7 @@ export async function activate(context: ExtensionContext) {
     register(NAMESPACE + '.bases.refresh', () => provider!.refreshReviewNavigation());
     register(NAMESPACE + '.bases.reset', () => provider!.resetReviewBase());
 
-    return { provider, orcaComments, baseProvider, historyProvider, get commitsProvider() { return commitsProvider; } };
+    return { provider, enrichment, orcaComments, baseProvider, historyProvider, get commitsProvider() { return commitsProvider; } };
 }
 
 export async function deactivate(): Promise<void> { await flushReviewHistory?.(); }

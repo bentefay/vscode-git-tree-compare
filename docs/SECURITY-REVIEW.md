@@ -86,3 +86,30 @@ and refusal checks; installation used an inert VSIX and a substitute editor.
 No GitHub release was published and no extension was installed into the user's
 personal editor profile. macOS/ARM execution and remote GitHub Actions have not
 been exercised from this Linux session.
+
+## Agent enrichment boundary
+
+Agent output is untrusted data. The CLI and packaged worker use the same bounded,
+strict validator. Unknown keys, traversal paths, options passed as revisions,
+invalid object IDs and invalid ranges are rejected. Git receives argument arrays,
+literal pathspecs and resolved commits, with external diff and textconv disabled.
+Inherited Git directory/index overrides are cleared so `--repo` identifies the
+checkout being read. Reads and publications are size-bounded; parallel file reads
+are capped at four. Storage directories and files reject symlinks. Working-tree
+annotations require regular files whose parents resolve inside the checkout.
+This is not a filesystem sandbox against another process racing path replacements.
+
+Only the CLI/worker can publish, after rechecking content and snapshot identity.
+Published data is never interpreted as commands, shell text, trusted Markdown or
+arbitrary navigation URIs. Native comments use escaped plain text and have no reply
+box or create-comment provider. Webview text is HTML-escaped, scripts/styles use a
+nonce CSP, external resources are disabled, and messages can only select indices
+from the loaded result. The host checks comparison membership again when opening
+a file. Stale or dirty code cannot receive old line anchors. These are agent
+suggestions, separate from human approvals; even mechanically verified whitespace
+changes can affect program semantics.
+
+The globally installed skill contains the trusted local CLI path, not credentials.
+Its installer uses the locked `skills` package with telemetry disabled. Automated
+installation tests use disposable HOME, Codex and Claude directories. The VSIX
+ships only the core and worker, not the skills installer or its dependencies.

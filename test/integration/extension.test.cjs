@@ -19,12 +19,12 @@ async function eventually(fn) {
 }
 
 describe('Git Tree Compare in the extension host', () => {
-    let provider;
+    let provider, enrichment;
     before(async () => {
         assert.equal(vscode.workspace.isTrusted, true);
         const builtin = await vscode.extensions.getExtension('vscode.git').activate();
         await eventually(() => builtin.getAPI(1).repositories.length);
-        ({ provider } = await vscode.extensions.getExtension('bentefay.git-tree-compare').activate());
+        ({ provider, enrichment } = await vscode.extensions.getExtension('bentefay.git-tree-compare').activate());
         await vscode.commands.executeCommand('workbench.view.extension.gitTreeCompare');
         await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
     });
@@ -48,6 +48,64 @@ describe('Git Tree Compare in the extension host', () => {
         const node = children.find(node => node.dstAbsPath?.endsWith('/example.txt'));
         await vscode.commands.executeCommand('gitTreeCompare.openChanges', node);
         assert.ok(vscode.window.tabGroups.all.some(group => group.tabs.some(tab => tab.input instanceof vscode.TabInputTextDiff)));
+    });
+
+
+    it('enrichment shares labels, guide and read-only native explanations and withdraws stale ranges', async () => {
+        const core = require('../../shared/enrichment.cjs');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        await enrichment.refresh();
+        const selection = provider.getEnrichmentComparisons().find(c => c.root === root).selection;
+        const snapshot = await core.context(root, selection);
+        const data = { version: 1, snapshotId: snapshot.id, producer: 'Integration agent', summary: 'Explain the example edit.',
+            files: [{ path: 'example.txt', priority: 'important', kind: 'behaviour', reason: 'Review this edit.', annotations: [
+                { side: 'after', startLine: 1, endLine: 1, title: 'Review explanation', body: '<script>not executable</script>', scope: 'file' },
+            ] }], guide: [{ path: 'example.txt', title: 'Start with the example', description: 'Read the edit.', annotation: 0 }] };
+        const output = path.join(process.env.GTC_TEST_RESULTS, 'enrichment.json');
+        await fs.writeFile(output, JSON.stringify(data));
+        const file = path.join(root, 'example.txt'), original = await fs.readFile(file);
+        try {
+            await enrichment.importFile(root, output);
+            await eventually(() => enrichment.getState(root)?.current === true);
+            const [base] = await provider.getChildren();
+            const node = (await provider.getChildren(base)).find(n => n.dstAbsPath === file);
+            const checkbox = provider.getTreeItem(node).checkboxState;
+            assert.match(provider.getTreeItem(node).description, /important.*behaviour/);
+            const [step] = enrichment.getChildren(); assert.equal(step.title, 'Start with the example');
+            assert.equal(enrichment.controller.commentingRangeProvider, undefined);
+            await enrichment.openStep(root, 0);
+            await eventually(() => enrichment.threads.length > 0);
+            assert.equal(enrichment.threads[0].canReply, false);
+            assert.notEqual(enrichment.threads[0].comments[0].body.isTrusted, true);
+            assert.equal(enrichment.threads[0].range.start.line, 0);
+            const retainedThread = enrichment.threads[0];
+            enrichment.renderNotes(); enrichment.renderNotes();
+            assert.equal(enrichment.threads[0], retainedThread, 'Unchanged notes must retain their native thread identity');
+            assert.equal(provider.getTreeItem(node).checkboxState, checkbox);
+            await fs.writeFile(file, 'agent changed this again\n');
+            await enrichment.refresh();
+            await eventually(() => /stale/.test(enrichment.label(root, 'example.txt')?.description ?? ''));
+            assert.match(enrichment.label(root, 'example.txt').description, /stale/);
+            assert.equal(enrichment.threads.length, 0);
+            assert.equal(enrichment.getChildren()[0].stale, true);
+            await fs.writeFile(file, original);
+            await enrichment.refresh();
+            await eventually(() => enrichment.getState(root)?.current === true);
+            await enrichment.openFile(root, 'example.txt', 0);
+            await eventually(() => enrichment.threads.length > 0);
+            const document = await vscode.workspace.openTextDocument(file);
+            const edit = new vscode.WorkspaceEdit(); edit.insert(document.uri, new vscode.Position(0, 0), 'unsaved');
+            await vscode.workspace.applyEdit(edit);
+            await enrichment.refresh();
+            assert.equal(enrichment.threads.length, 0, 'Dirty buffers must never receive old line anchors');
+            await eventually(() => enrichment.getState(root)?.current === false);
+            await vscode.commands.executeCommand('workbench.action.files.revert');
+        } finally {
+            await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+            await fs.writeFile(file, original);
+            await fs.rm(path.join(root, '.git/git-tree-compare/enrichment'), { recursive: true, force: true });
+            await enrichment.refresh();
+        }
     });
 
     it('reveals editor resources inside collapsed, compact and list views without cached parents', async () => {

@@ -1,3 +1,4 @@
+import type { Selection } from '../shared/enrichment.cjs';
 import * as assert from 'assert'
 import * as path from 'path'
 import * as fs from 'fs'
@@ -824,6 +825,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
     fireTreeDataChange() {
         this.parentMap.clear();
         this.elementMap.clear();
+        this.enrichmentRowLabels.clear();
         this.updateRevealContext();
         this._onDidChangeTreeData.fire();
     }
@@ -1422,7 +1424,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         this.disposables.push(fsWatcher);
         const onWorkspaceChange = anyEvent(fsWatcher.onDidChange, fsWatcher.onDidCreate, fsWatcher.onDidDelete);
         const onRelevantWorkspaceChange = filterEvent(onWorkspaceChange, uri => this.isRelevantChange(uri));
-        this.disposables.push(onRelevantWorkspaceChange(this.handleWorkspaceChange, this));
+        this.disposables.push(this.enrichmentChanges, onRelevantWorkspaceChange(this.handleWorkspaceChange, this));
 
         this.disposables.push(workspace.onDidChangeTextDocument(event => {
             if (event.document.uri.scheme !== 'file') { return; }
@@ -2297,6 +2299,58 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         this.showDiffStats = config.get<boolean>('showDiffStats', false);
     }
 
+    private readonly enrichmentRowLabels = new Map<string, string>();
+    enrichmentLabel?: (root: string, file: string) => { description: string; tooltip: string } | undefined;
+    private readonly enrichmentChanges = new EventEmitter<{ root: string; path: string; changed: boolean }>();
+    readonly onDidChangeEnrichmentFile = this.enrichmentChanges.event;
+
+    getEnrichmentComparisons(): { root: string; gitDir: string; head: string | undefined; branch: string | undefined; selection: Selection }[] {
+        return [...this.comparisons.values()].filter(c => c.isLoaded && c.getDiffEndpoints().leftRef && c.commitFilter.kind !== 'empty').map(c => {
+            const endpoints = c.getDiffEndpoints();
+            return { root: c.repoRoot, gitDir: c.absGitDir, head: c.headCommit, branch: c.headName,
+                selection: { left: endpoints.leftRef, right: endpoints.rightRef, files: c.reviewFiles().map(f => ({
+                    path: path.relative(c.repoRoot, f.dstAbsPath).split(path.sep).join('/'),
+                    source: path.relative(c.repoRoot, f.srcAbsPath).split(path.sep).join('/'), status: f.status,
+                })) } };
+        });
+    }
+
+    get enrichmentRepository(): string | undefined { return this.commitsComparison?.repoRoot; }
+
+    refreshEnrichmentRows(): void {
+        // Refresh only materialized rows whose label changed. Invalidating the root
+        // resets selection during reveal() and is unnecessary for label-only changes.
+        for (const [file, element] of this.elementMap) {
+            const label = this.enrichmentLabel?.(element.repositoryRoot, path.relative(element.repositoryRoot, file).split(path.sep).join('/'));
+            const value = label ? JSON.stringify(label) : undefined;
+            if (this.enrichmentRowLabels.get(file) === value) { continue; }
+            if (value) { this.enrichmentRowLabels.set(file, value); } else { this.enrichmentRowLabels.delete(file); }
+            this._onDidChangeTreeData.fire(element);
+        }
+    }
+
+    enrichmentUris(root: string, file: string, expected?: Selection): { before: Uri; after: Uri } | undefined {
+        const comparison = this.comparisons.get(root);
+        const found = comparison?.findFile(path.join(root, file));
+        if (!comparison || !found) { return undefined; }
+        const { leftRef, rightRef } = comparison.getDiffEndpoints();
+        if (expected && (expected.left !== leftRef || expected.right !== rightRef)) { return undefined; }
+        return { before: this.gitApi.toGitUri(Uri.file(found.srcAbsPath), leftRef),
+            after: rightRef === null ? Uri.file(found.dstAbsPath) : this.gitApi.toGitUri(Uri.file(found.dstAbsPath), rightRef) };
+    }
+
+    async openEnrichmentFile(root: string, file: string, side?: 'before' | 'after', range?: Range): Promise<void> {
+        const comparison = this.comparisons.get(root);
+        const found = comparison?.findFile(path.join(root, file));
+        if (!comparison || !found) { throw new Error('This file is no longer in the selected comparison.'); }
+        await this.doOpenChanges(comparison, found.srcAbsPath, found.dstAbsPath, found.status, range ? { selection: range } : {});
+        const uri = this.enrichmentUris(root, file)?.[side ?? 'after'];
+        const editor = uri && window.visibleTextEditors.find(e => e.document.uri.toString() === uri.toString());
+        if (editor && range && range.end.line < editor.document.lineCount) {
+            editor.revealRange(range, TextEditorRevealType.InCenter);
+        }
+    }
+
     getTreeItem(element: Element): TreeItem {
         const comparison = this.getExistingComparison(element.repositoryRoot);
         let checkboxState: TreeItemCheckboxState | undefined;
@@ -2342,6 +2396,14 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
                 if (record?.commit && !element.isSubmodule) { item.contextValue += '-review-changed'; }
                 else if (!record?.commit) { item.tooltip += ' (approve again to record a commit baseline)'; }
             }
+        }
+        if (element instanceof FileElement) {
+            const label = this.enrichmentLabel?.(element.repositoryRoot, path.relative(element.repositoryRoot, element.dstAbsPath).split(path.sep).join('/'));
+            if (label) {
+                this.enrichmentRowLabels.set(element.dstAbsPath, JSON.stringify(label));
+                item.description = [typeof item.description === 'string' ? item.description : '', label.description].filter(Boolean).join(' · ');
+                item.tooltip = `${item.tooltip ?? element.dstAbsPath}\n${label.tooltip}`;
+            } else { this.enrichmentRowLabels.delete(element.dstAbsPath); }
         }
         return item;
     }
@@ -2497,6 +2559,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
             this.log(`Ignoring change outside of repositories: ${uri.fsPath}`)
             return;
         }
+        this.enrichmentChanges.fire({ root: comparison.repoRoot, path: uri.fsPath, changed: contentsChanged });
         // Also invalidate in-flight hashes. Review correctness remains enabled
         // when automatic Git diff refresh is disabled.
         // A repository status event is not evidence that every file changed.

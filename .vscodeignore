@@ -6,3 +6,5 @@
 !resources/**
 !dist/extension.js
 !dist/extension.js.LICENSE.txt
+!shared/enrichment.cjs
+!shared/enrichment-worker.cjs

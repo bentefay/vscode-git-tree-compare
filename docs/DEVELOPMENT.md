@@ -160,3 +160,59 @@ does not promise byte-for-byte reproducible release archives.
 These informed the layered loop: fast regression tests, real host integration,
 then a small packaged UI smoke test. Playwright's Electron support remains
 experimental; ExTester's VS Code page objects are the narrower fit here.
+
+## Agent enrichment
+
+`cli/bin/run skills install --global` installs the bundled `enrich-pr` skill for
+Codex and Claude Code through the same pinned `skills@1.5.26` used in Cosmos.
+Use `--agent codex` or `--agent claude-code` to select one, and `--dry-run` to
+preview. The installer copies a helper containing this checkout's absolute CLI
+path. Keep the checkout available; reinstall the skill after moving it. No ad
+hoc package download is involved. Skill installation is a separate user action
+from building or installing the VSIX.
+
+The editor exports its current comparison selection in the background. The CLI
+always takes an explicit target via `--repo` (otherwise it uses the original
+invocation directory, before the launcher enters this repository):
+
+```sh
+cli/bin/run enrich context --repo /path/to/checkout --out /tmp/review-context.json
+cli/bin/run enrich schema
+cli/bin/run enrich validate --repo /path/to/checkout --file /tmp/enrichment.json
+cli/bin/run enrich publish --repo /path/to/checkout --file /tmp/enrichment.json
+```
+
+Without an editor selection, pass `--base <ref>` and optionally `--right <ref>`.
+These are exact endpoints, resolved to commits; the command does not silently
+calculate a merge-base or guess a default branch. A missing right endpoint means
+the working tree. The context includes paths, both-side identities and a snapshot
+ID. The agent supplies explanations, not hashes. `shared/enrichment.schema.json`
+describes the JSON structure; the shared validator also checks actual paths,
+line bounds, blob contents, whitespace claims and snapshot freshness. Invalid
+publication leaves the previous pointer intact.
+
+The shared core runs directly in the CLI and in a dedicated worker in the
+extension. The extension host renders cached labels; it performs no synchronous
+Git calls or source-file reads. Existing repository/document events schedule
+coalesced checks. A narrow watcher on the worktree's enrichment publication
+pointer directory discovers completed runs. It does not watch the source tree.
+Native explanations are created only for visible documents, remain read-only,
+and start collapsed. Guide navigation expands the selected explanation. The
+Review Brief webview is created only on request.
+
+State lives under the resolved per-worktree Git directory at
+`git-tree-compare/enrichment/v1`: immutable `snapshots/` and `runs/`, atomic
+`current/` pointers, and `selection.json`. Linked worktrees have separate storage.
+Runs survive branch changes; changing base selects a different publication.
+Returning to identical content restores matching file explanations. HEAD or
+comparison changes invalidate comparison-scoped explanations. File-scoped notes
+survive unrelated changes, but never attach to edited or dirty file versions.
+No enrichment automatically checks a review checkbox or hides a file.
+
+Snapshots and runs are local and retained until manually removed; they are not
+synced with review approvals. A result is limited to 2 MiB, 2,000 files, 200 notes
+and 100 guide steps. Binary, oversized and non-regular files can receive summaries,
+but cannot receive code annotations. No server, model API or credentials are
+required. If an agent's sandbox cannot publish into the Git directory, it can
+write validated JSON to an allowed location; use **Import Enrichment JSON** in
+the extension. The import validates freshness again.

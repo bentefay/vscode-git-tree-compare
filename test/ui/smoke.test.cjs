@@ -462,4 +462,55 @@ describe('Packaged VSIX', function () {
         await new Workbench().executeCommand('Git Tree Compare: Reset Comparison Base');
     });
 
+    it('shows agent labels, a collapsed guide, native explanations and an interactive review brief', async () => {
+        const core = require('../../shared/enrichment.cjs');
+        const root = process.env.GTC_TEST_REPOSITORY;
+        await new Workbench().executeCommand('Git Tree Compare: Refresh Enrichment');
+        const snapshot = await core.context(root);
+        const data = { version: 1, snapshotId: snapshot.id, producer: 'UI fixture agent', summary: 'A small example change with a suggested reading order.',
+            files: [{ path: 'example.txt', priority: 'important', kind: 'behaviour', reason: 'Review the changed output.', annotations: [
+                { side: 'after', startLine: 1, endLine: 1, title: 'Why this line matters', body: 'This line changes the example output. Check it against the expected behaviour.', scope: 'file' },
+            ] }], guide: [{ path: 'example.txt', title: 'Review the example', description: 'Start here to understand the change.', annotation: 0 }] };
+        const output = path.join(process.env.GTC_TEST_RESULTS, 'enrichment.json');
+        await fs.writeFile(output, JSON.stringify(data));
+        await core.publish(root, output);
+        await new Workbench().executeCommand('Git Tree Compare: Refresh Enrichment');
+        await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
+        await browser.driver.wait(async () => (await (await row('example.txt')).getText()).includes('important'), 15000);
+        const header = await browser.driver.wait(async () => {
+            for (const item of await browser.driver.findElements(By.css('.pane-header[aria-label^="Review Guide"]'))) if (await item.isDisplayed()) return item;
+            return false;
+        }, 15000);
+        assert.equal(await header.getAttribute('aria-expanded'), 'false', 'The new guide starts collapsed');
+        await header.click();
+        await (await row('1. Review the example')).click();
+        await browser.driver.wait(async () => { for (const element of await browser.driver.findElements(By.css('.review-widget'))) { if (await element.isDisplayed() && (await element.getText()).includes('This line changes')) return true; } return false; }, 10000);
+        await browser.takeScreenshot('enrichment-guide-and-explanation');
+        await new Workbench().executeCommand('Git Tree Compare: Open Review Brief');
+        const enterBrief = async () => {
+            await browser.driver.switchTo().defaultContent();
+            for (const frame of await browser.driver.findElements(By.css('iframe.webview'))) {
+                await browser.driver.switchTo().frame(frame);
+                for (const inner of await browser.driver.findElements(By.css('iframe'))) {
+                    await browser.driver.switchTo().frame(inner);
+                    if ((await browser.driver.findElements(By.css('#filter'))).length) return true;
+                    await browser.driver.switchTo().parentFrame();
+                }
+                await browser.driver.switchTo().defaultContent();
+            }
+            return false;
+        };
+        try {
+            await browser.driver.wait(enterBrief, 15000, 'Review Brief must render its filter and file cards');
+            assert.match(await browser.driver.findElement(By.css('.summary')).getText(), /small example change/);
+            await browser.driver.executeScript("const f=document.querySelector('#filter');f.value='important';f.dispatchEvent(new Event('change'));");
+            assert.equal(await browser.driver.findElement(By.id('count')).getText(), '1 file');
+            await browser.driver.switchTo().defaultContent();
+            await browser.takeScreenshot('enrichment-review-brief');
+            await enterBrief();
+            await browser.driver.findElement(By.css('button.file')).click();
+        } finally { await browser.driver.switchTo().defaultContent(); }
+        await browser.driver.wait(async () => (await browser.driver.findElements(By.css('.monaco-diff-editor'))).length > 0, 10000);
+    });
+
 });

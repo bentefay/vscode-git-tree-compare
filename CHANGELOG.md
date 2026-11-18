@@ -1,5 +1,15 @@
 ## Unreleased
 
+## Unreleased
+
+- Add optional agent enrichment: cached file labels, read-only code explanations,
+  a collapsed Review Guide and an on-demand Review Brief.
+- Add context, schema, validation and publication CLI commands, plus a global
+  enrich-pr skill installer for Codex and Claude Code using the pinned skills tool.
+- Keep analysis local to each worktree, detect stale content and validate it in a
+  background worker independently of review checkboxes.
+
+
 * Add native inline Orca review comments on any line, local draft persistence, and CLI delivery to an agent in the matching worktree.
 
 * Persist and sync content-validated review checkboxes across sessions, filters and branches, retaining the last approved comparison through edits and rebases.

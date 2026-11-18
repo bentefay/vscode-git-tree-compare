@@ -202,6 +202,45 @@ editor events detect edits; startup, focus and manual refresh catch missed
 changes. The old `resetCheckboxOnFileChange` setting is deprecated because review
 checks now always validate content.
 
+## Agent-assisted review
+
+Use the bundled **enrich-pr** skill with a locally checked-out PR to add three
+complementary views from one analysis:
+
+- **File labels and explanations:** important/plumbing/tests/whitespace labels in
+  the existing tree, plus collapsed, read-only explanations on exact code ranges.
+- **Review Guide:** a pane that starts collapsed, with a suggested reading order
+  and links to the normal comparison diff.
+- **Review Brief:** an on-demand overview with a summary, reading order and
+  filterable file cards. Open it from the view menu or Command Palette.
+
+Install the skill from this source checkout:
+
+```sh
+cli/bin/run skills install --global
+```
+
+This uses the pinned `skills` package for Codex and Claude Code. Select just one
+with `--agent codex` or `--agent claude-code`; preview with `--dry-run`. Keep this
+checkout available because the skill invokes its CLI. Restart the agent if needed
+to discover the new skill, then ask it to **enrich the current PR** using
+`enrich-pr` (`$enrich-pr` in Codex, `/enrich-pr` in Claude Code).
+
+Choose the comparison in Git Tree Compare first. The skill captures that exact
+selection, reads the changes, validates its JSON and publishes it locally. If
+it cannot write to the Git directory, use **Git Tree Compare: Import Enrichment
+JSON**. No model runs automatically inside the extension.
+
+New edits mark previous analysis out of date and remove stale line explanations.
+Returning to unchanged content restores matching notes. Labels never approve or
+hide files and preserve the existing changed-since-review color. Use **Toggle
+Review Explanations** to hide inline notes while keeping the guide and labels.
+Enrichment is stored in the worktree's Git directory, so it adds no tracked files
+and needs no ignore rule. It stays local; review checkbox sync is unchanged.
+
+See [the enrichment CLI documentation](docs/DEVELOPMENT.md#agent-enrichment) for
+explicit base selection, the JSON schema, validation and storage details.
+
 ## Development
 
 ```sh

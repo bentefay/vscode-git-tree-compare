@@ -1,0 +1,159 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "snapshotId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "producer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 6000
+    },
+    "files": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "priority": {
+            "enum": [
+              "normal",
+              "important"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "behaviour",
+              "plumbing",
+              "tests",
+              "docs",
+              "formatting",
+              "whitespace",
+              "dependencies",
+              "generated",
+              "other"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "annotations": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "side": {
+                  "enum": [
+                    "before",
+                    "after"
+                  ]
+                },
+                "startLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "body": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 6000
+                },
+                "scope": {
+                  "enum": [
+                    "file",
+                    "comparison"
+                  ]
+                }
+              },
+              "required": [
+                "side",
+                "startLine",
+                "endLine",
+                "title",
+                "body"
+              ]
+            }
+          }
+        },
+        "required": [
+          "path",
+          "priority",
+          "kind",
+          "reason",
+          "annotations"
+        ]
+      }
+    },
+    "guide": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "annotation": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "path",
+          "title",
+          "description"
+        ]
+      }
+    }
+  },
+  "required": [
+    "version",
+    "snapshotId",
+    "producer",
+    "summary",
+    "files",
+    "guide"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

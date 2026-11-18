@@ -84,6 +84,13 @@
                     "icon": "./resources/logo.svg",
                     "initialSize": 1,
                     "visibility": "collapsed"
+                },
+                {
+                    "id": "gitTreeCompareGuide",
+                    "name": "Review Guide",
+                    "when": "config.git.enabled && gitOpenRepositoryCount != 0",
+                    "visibility": "collapsed",
+                    "initialSize": 1
                 }
             ]
         },
@@ -102,6 +109,10 @@
                 "view": "gitTreeCompare",
                 "contents": "No git repository found in the open folders.\nIf you expected one, check the Source Control view: the repository may be closed, or blocked as unsafe.\n[Show Source Control](command:workbench.view.scm)",
                 "when": "config.git.enabled && !git.missing && git.state == initialized && gitOpenRepositoryCount == 0 && workbenchState != empty"
+            },
+            {
+                "view": "gitTreeCompareGuide",
+                "contents": "Enrich this comparison with the enrich-pr skill to get a suggested reading order.\n[Import Enrichment JSON](command:gitTreeCompare.enrichment.import)\n[Open Review Brief](command:gitTreeCompare.enrichment.openBrief)"
             }
         ],
         "commands": [
@@ -396,6 +407,36 @@
                 "title": "Reset Comparison Base",
                 "category": "Git Tree Compare",
                 "icon": "$(discard)"
+            },
+            {
+                "command": "gitTreeCompare.enrichment.openBrief",
+                "title": "Open Review Brief",
+                "category": "Git Tree Compare",
+                "icon": "$(book)"
+            },
+            {
+                "command": "gitTreeCompare.enrichment.refresh",
+                "title": "Refresh Enrichment",
+                "category": "Git Tree Compare",
+                "icon": "$(refresh)"
+            },
+            {
+                "command": "gitTreeCompare.enrichment.exportContext",
+                "title": "Export Enrichment Context",
+                "category": "Git Tree Compare",
+                "icon": "$(export)"
+            },
+            {
+                "command": "gitTreeCompare.enrichment.import",
+                "title": "Import Enrichment JSON",
+                "category": "Git Tree Compare",
+                "icon": "$(cloud-download)"
+            },
+            {
+                "command": "gitTreeCompare.enrichment.toggleExplanations",
+                "title": "Toggle Review Explanations",
+                "category": "Git Tree Compare",
+                "icon": "$(comment-discussion)"
             }
         ],
         "submenus": [
@@ -647,6 +688,31 @@
                     "command": "gitTreeCompare.bases.refresh",
                     "when": "view == gitTreeCompareHistory",
                     "group": "navigation"
+                },
+                {
+                    "command": "gitTreeCompare.enrichment.openBrief",
+                    "when": "view == gitTreeCompare || view == gitTreeCompareGuide",
+                    "group": "enrichment@openBrief"
+                },
+                {
+                    "command": "gitTreeCompare.enrichment.refresh",
+                    "when": "view == gitTreeCompare || view == gitTreeCompareGuide",
+                    "group": "enrichment@refresh"
+                },
+                {
+                    "command": "gitTreeCompare.enrichment.exportContext",
+                    "when": "view == gitTreeCompare || view == gitTreeCompareGuide",
+                    "group": "enrichment@exportContext"
+                },
+                {
+                    "command": "gitTreeCompare.enrichment.import",
+                    "when": "view == gitTreeCompare || view == gitTreeCompareGuide",
+                    "group": "enrichment@import"
+                },
+                {
+                    "command": "gitTreeCompare.enrichment.toggleExplanations",
+                    "when": "view == gitTreeCompare || view == gitTreeCompareGuide",
+                    "group": "enrichment@toggleExplanations"
                 }
             ],
             "view/item/context": [
@@ -1099,6 +1165,11 @@
                     "default": "",
                     "scope": "application",
                     "description": "Path to the Orca CLI executable (no arguments). Empty uses ORCA_CLI_COMMAND or platform discovery (orca-ide on Linux). Requires a local terminal agent; native chat tabs are not supported yet."
+                },
+                "gitTreeCompare.enrichment.showExplanations": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show collapsed, read-only agent explanations on fresh code ranges. File labels and Review Guide remain available."
                 }
             }
         },
@@ -1134,16 +1205,17 @@
         "@types/node": "22.19.0",
         "@types/vscode": "1.108.0",
         "@types/which": "^1.0.28",
-        "@vscode/vsce": "4.1.0",
-        "ts-loader": "^9.2.6",
-        "typescript": "5.9.3",
-        "webpack": "^5.44.0",
-        "webpack-cli": "^4.2.0",
         "@vscode/test-cli": "0.0.15",
         "@vscode/test-electron": "3.1.0",
-        "vscode-extension-tester": "8.28.1",
+        "@vscode/vsce": "4.1.0",
+        "clipanion": "4.0.0-rc.4",
         "mocha": "11.7.5",
-        "clipanion": "4.0.0-rc.4"
+        "skills": "1.5.26",
+        "ts-loader": "^9.2.6",
+        "typescript": "5.9.3",
+        "vscode-extension-tester": "8.28.1",
+        "webpack": "^5.44.0",
+        "webpack-cli": "^4.2.0"
     },
     "dependencies": {
         "@octokit/rest": "^22.0.1",
