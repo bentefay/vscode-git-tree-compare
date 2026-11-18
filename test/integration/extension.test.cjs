@@ -87,6 +87,41 @@ describe('Git Tree Compare in the extension host', () => {
         }
     });
 
+    it('opens editor resources using the current comparison endpoints and rejects stale menu actions', async () => {
+        const file = path.join(root, 'example.txt');
+        const uri = vscode.Uri.file(file);
+        const comparison = provider.activeComparison;
+        const gitApi = vscode.extensions.getExtension('vscode.git').exports.getAPI(1);
+        const assertDiff = () => {
+            const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+            assert.ok(input instanceof vscode.TabInputTextDiff);
+            const { leftRef, rightRef } = comparison.getDiffEndpoints();
+            assert.equal(input.original.toString(), gitApi.toGitUri(uri, leftRef).toString());
+            assert.equal(input.modified.toString(), (rightRef === null ? uri : gitApi.toGitUri(uri, rightRef)).toString());
+            assert.equal(provider.treeView.selection[0]?.dstAbsPath, file);
+        };
+        // Explicit resources must win over the active editor (e.g. an inactive tab).
+        await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(path.join(root, 'other.txt')));
+        await vscode.commands.executeCommand('gitTreeCompare.openDiffFromEditor', uri);
+        assertDiff();
+        // Git revision documents and the command-palette fallback use the same comparison.
+        await vscode.commands.executeCommand('gitTreeCompare.openDiffFromEditor', gitApi.toGitUri(uri, 'HEAD'));
+        assertDiff();
+        await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+        await vscode.commands.executeCommand('gitTreeCompare.openDiffFromEditor');
+        assertDiff();
+        try {
+            const unrelated = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(path.join(root, 'other.txt')));
+            comparison.searchFilter = 'committed.txt';
+            provider.fireTreeDataChange();
+            await vscode.commands.executeCommand('gitTreeCompare.openDiffFromEditor', uri);
+            assert.equal(vscode.window.activeTextEditor, unrelated, 'A stale menu must not open a filtered-out file');
+        } finally {
+            comparison.searchFilter = undefined;
+            provider.fireTreeDataChange();
+        }
+    });
+
     it('only offers reveal for included files and rechecks filters when a menu command executes', async () => {
         const comparison = provider.activeComparison;
         const file = path.join(root, 'example.txt');
@@ -513,12 +548,17 @@ describe('Repository review workflow', () => {
             changed = true;
         };
         try {
-            await provider.handleChangeCheckboxState({ items: [[node, vscode.TreeItemCheckboxState.Checked]] });
+            // Events from the preceding branch switch may reject an approval
+            // before it reaches storage. Wait until the injected race actually runs.
+            await eventually(async () => {
+                await provider.handleChangeCheckboxState({ items: [[node, vscode.TreeItemCheckboxState.Checked]] });
+                return changed;
+            });
             assert.equal(changed, true);
             assert.equal(checked(node), false, 'The persisted earlier hash must not check newer contents');
-            const approved = provider.reviewStore.get(comparison.keyForReview(node)).fingerprint;
+            const approved = provider.reviewStore.get(comparison.keyForReview(node));
             const context = await comparison.fingerprintContext();
-            assert.notEqual(approved, await comparison.fingerprinter.fingerprint(node, context.left, context.right, context.fileMode));
+            assert.notEqual(approved.fingerprint, await comparison.fingerprinter.fingerprint(node, context.left, context.right, context.fileMode, approved.contentOnly));
         } finally { provider.reviewStore.setMany = original; }
     });
 

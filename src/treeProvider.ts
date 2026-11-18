@@ -2234,6 +2234,14 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
     }
 
     async revealInTree(resource?: Uri): Promise<void> {
+        await this.revealEditorResource(resource, false);
+    }
+
+    async openDiffFromEditor(resource?: Uri): Promise<void> {
+        await this.revealEditorResource(resource, true);
+    }
+
+    private async revealEditorResource(resource: Uri | undefined, openDiff: boolean): Promise<void> {
         const uri = resource ?? window.activeTextEditor?.document.uri;
         if (!uri) { return; }
         const file = this.editorFilePath(uri);
@@ -2249,6 +2257,12 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         try {
             await this.treeView.reveal(node, { select: true, focus: true });
         } catch (error: any) { this.log('Could not reveal the file in Git Tree Compare', error); }
+        if (openDiff) {
+            // Revealing can yield while filters or the active comparison change.
+            const latest = this.revealableFiles().get(file!);
+            if (latest?.comparison !== comparison) { return; }
+            await this.doOpenChanges(comparison, latest.file.srcAbsPath, latest.file.dstAbsPath, latest.file.status);
+        }
     }
 
     log(msg: string, error: Error | undefined=undefined) {

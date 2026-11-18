@@ -173,8 +173,9 @@ describe('Packaged VSIX', function () {
             }, 5000, 'Context menu must close before continuing');
         }
     });
-    it('reveals included editor and inactive-tab files in the comparison view', async () => {
+    it('reveals included editor and inactive-tab files and opens their comparison diffs', async () => {
         const title = 'Reveal in Git Tree Compare View';
+        const diffTitle = 'Open Git Tree Compare Diff';
         const menuItems = async () => {
             const items = await browser.driver.findElements(By.css('.context-view .action-label'));
             // Recent VS Code editors host their context menu in a shadow root;
@@ -185,25 +186,25 @@ describe('Packaged VSIX', function () {
             }
             return items;
         };
-        const menuItem = async () => {
+        const menuItem = async (label = title) => {
             for (const item of await menuItems()) {
-                if (await item.isDisplayed() && await item.getText() === title) return item;
+                if (await item.isDisplayed() && await item.getText() === label) return item;
             }
             return false;
         };
-        const selectReveal = async message => {
-            const item = await browser.driver.wait(menuItem, 10000, message);
+        const selectReveal = async (message, label = title) => {
+            const item = await browser.driver.wait(() => menuItem(label), 10000, message);
             // Use a complete pointer gesture: a direct WebElement click can
             // leave VS Code's freshly opened menu focused without activating it.
             await browser.driver.actions().move({ origin: item }).click().perform();
             await browser.driver.wait(async () => {
-                try { return !await menuItem(); }
+                try { return !await menuItem(label); }
                 catch (error) {
                     // The menu and its shadow root can disappear mid-query.
                     if (!['StaleElementReferenceError', 'DetachedShadowRootError', 'NoSuchShadowRootError'].includes(error.name)) { throw error; }
                     return false;
                 }
-            }, 10000, 'Reveal must close the context menu');
+            }, 10000, 'The action must close the context menu');
         };
         const tab = async name => browser.driver.wait(async () => {
             for (const item of await browser.driver.findElements(By.css('.tab'))) {
@@ -233,6 +234,7 @@ describe('Packaged VSIX', function () {
         await browser.driver.actions().contextClick(await tab('other.txt')).perform();
         await browser.driver.wait(async () => (await menuItems()).length > 0, 10000);
         assert.equal(await menuItem(), false, 'An unchanged file must not offer reveal');
+        assert.equal(await menuItem(diffTitle), false, 'An unchanged file must not offer the comparison diff');
         await browser.driver.actions().sendKeys(Key.ESCAPE).perform();
         await (await new ActivityBar().getViewControl('Explorer')).openView();
         // Right-click a different tab: the command must use that tab's URI.
@@ -240,6 +242,39 @@ describe('Packaged VSIX', function () {
         await selectReveal('Included inactive tab must offer reveal');
         await browser.driver.wait(async () => (await row('output.ts')).getAttribute('aria-selected').then(value => value === 'true'), 10000);
         await browser.takeScreenshot('reveal-from-inactive-tab');
+
+        const expectDiff = async () => {
+            await browser.driver.wait(async () => {
+                const active = await browser.driver.findElements(By.css('.tab.active'));
+                return (await Promise.all(active.map(tab => tab.getAttribute('aria-label'))))
+                    .some(label => label?.startsWith('example.txt (Working Tree)'));
+            }, 10000, 'The comparison diff for the requested file must be active');
+            await browser.driver.wait(async () => {
+                for (const diff of await browser.driver.findElements(By.css('.monaco-diff-editor'))) {
+                    if (await diff.isDisplayed()) return true;
+                }
+                return false;
+            }, 10000);
+        };
+        await openFile('example.txt');
+        await browser.driver.actions().doubleClick(await tab('example.txt')).perform();
+        const lines = await browser.driver.wait(async () => {
+            for (const item of await browser.driver.findElements(By.css('.editor-instance .monaco-editor .view-lines'))) {
+                if (await item.isDisplayed()) return item;
+            }
+            return false;
+        }, 10000);
+        await browser.driver.actions().contextClick(lines).perform();
+        await browser.driver.wait(() => menuItem(diffTitle), 10000);
+        await browser.takeScreenshot('open-comparison-diff-menu');
+        await selectReveal('Included editor must offer the comparison diff', diffTitle);
+        await expectDiff();
+
+        await openFile('other.txt');
+        await browser.driver.actions().contextClick(await tab('example.txt')).perform();
+        await selectReveal('Included inactive tab must offer the comparison diff', diffTitle);
+        await expectDiff();
+        await browser.takeScreenshot('open-comparison-diff-from-inactive-tab');
     });
 
     it('restores review progress after a full restart and retains the approved hash after edits', async () => {

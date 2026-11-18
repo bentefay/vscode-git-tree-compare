@@ -47,7 +47,9 @@ command and view identifiers.
 Right-click an editor or its tab and choose **Reveal in Git Tree Compare View**
 to select that file in the tree and expand its parent folders. The action appears
 only for files included in the current comparison and filters, including files
-inside collapsed folders. It also works from Git diff editors.
+inside collapsed folders. Choose **Open Git Tree Compare Diff** in the same menu
+to select the file and open its changes against the current comparison base.
+Both actions also work from Git diff editors.
 
 The default **merge** mode compares your working tree with its common ancestor
 with the selected base, which is useful for reviewing a feature branch. **Full**

@@ -371,6 +371,11 @@
                 "category": "Git Tree Compare"
             },
             {
+                "command": "gitTreeCompare.openDiffFromEditor",
+                "title": "Open Git Tree Compare Diff",
+                "category": "Git Tree Compare"
+            },
+            {
                 "command": "gitTreeCompare.bases.selectBase",
                 "title": "Use as Comparison Base",
                 "category": "Git Tree Compare"
@@ -447,6 +452,10 @@
                 },
                 {
                     "command": "gitTreeCompare.revealInTree",
+                    "when": "resource in gitTreeCompare.revealableResources"
+                },
+                {
+                    "command": "gitTreeCompare.openDiffFromEditor",
                     "when": "resource in gitTreeCompare.revealableResources"
                 },
                 {
@@ -889,6 +898,11 @@
                     "command": "gitTreeCompare.revealInTree",
                     "when": "resource in gitTreeCompare.revealableResources",
                     "group": "navigation@21"
+                },
+                {
+                    "command": "gitTreeCompare.openDiffFromEditor",
+                    "when": "resource in gitTreeCompare.revealableResources",
+                    "group": "navigation@22"
                 }
             ],
             "editor/title/context": [
@@ -896,6 +910,11 @@
                     "command": "gitTreeCompare.revealInTree",
                     "when": "resource in gitTreeCompare.revealableResources",
                     "group": "navigation@21"
+                },
+                {
+                    "command": "gitTreeCompare.openDiffFromEditor",
+                    "when": "resource in gitTreeCompare.revealableResources",
+                    "group": "navigation@22"
                 }
             ]
         },
