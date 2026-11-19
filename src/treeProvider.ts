@@ -1,3 +1,4 @@
+import type { EnrichmentLabel } from './enrichmentPresentation';
 import type { Selection } from '../shared/enrichment.cjs';
 import * as assert from 'assert'
 import * as path from 'path'
@@ -7,7 +8,7 @@ import { TreeDataProvider, TreeItem, TreeItemCollapsibleState,
          Uri, Disposable, EventEmitter, Event, TextDocumentShowOptions,
          QuickPickItem, ProgressLocation, Memento, OutputChannel,
          workspace, commands, window, env, WorkspaceFoldersChangeEvent, TreeView, ThemeIcon, TreeItemCheckboxState, TreeCheckboxChangeEvent, authentication, TextEditor, RelativePattern,
-         TabInputText, TabInputTextDiff, Range, TextEditorRevealType,
+         TabInputText, TabInputTextDiff, Range, Selection as EditorSelection, TextEditorRevealType,
          FileDecorationProvider, FileDecoration, ProviderResult, ThemeColor } from 'vscode'
 import { NAMESPACE } from './constants'
 import { Repository, Git } from './git/git'
@@ -2300,7 +2301,7 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
     }
 
     private readonly enrichmentRowLabels = new Map<string, string>();
-    enrichmentLabel?: (root: string, file: string) => { description: string; tooltip: string } | undefined;
+    enrichmentLabel?: (root: string, file: string) => EnrichmentLabel | undefined;
     private readonly enrichmentChanges = new EventEmitter<{ root: string; path: string; changed: boolean }>();
     readonly onDidChangeEnrichmentFile = this.enrichmentChanges.event;
 
@@ -2343,11 +2344,22 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
         const comparison = this.comparisons.get(root);
         const found = comparison?.findFile(path.join(root, file));
         if (!comparison || !found) { throw new Error('This file is no longer in the selected comparison.'); }
-        await this.doOpenChanges(comparison, found.srcAbsPath, found.dstAbsPath, found.status, range ? { selection: range } : {});
+        await this.doOpenChanges(comparison, found.srcAbsPath, found.dstAbsPath, found.status,
+            range && side !== 'before' ? { selection: range } : {});
         const uri = this.enrichmentUris(root, file)?.[side ?? 'after'];
-        const editor = uri && window.visibleTextEditors.find(e => e.document.uri.toString() === uri.toString());
-        if (editor && range && range.end.line < editor.document.lineCount) {
-            editor.revealRange(range, TextEditorRevealType.InCenter);
+        if (!uri || !range) { return; }
+        const find = () => window.visibleTextEditors.find(e => e.document.uri.toString() === uri.toString());
+        const editor = find() ?? await new Promise<TextEditor | undefined>(resolve => {
+            const listener = window.onDidChangeVisibleTextEditors(() => {
+                const visible = find();
+                if (visible) { clearTimeout(timer); listener.dispose(); resolve(visible); }
+            });
+            const timer = setTimeout(() => { listener.dispose(); resolve(undefined); }, 2000);
+        });
+        if (editor && range.end.line < editor.document.lineCount) {
+            const selection = new EditorSelection(range.start, editor.document.lineAt(range.end.line).range.end);
+            editor.selection = selection;
+            editor.revealRange(selection, TextEditorRevealType.InCenter);
         }
     }
 
@@ -2403,6 +2415,18 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
                 this.enrichmentRowLabels.set(element.dstAbsPath, JSON.stringify(label));
                 item.description = [typeof item.description === 'string' ? item.description : '', label.description].filter(Boolean).join(' · ');
                 item.tooltip = `${item.tooltip ?? element.dstAbsPath}\n${label.tooltip}`;
+                // Attention colours belong to the icon, leaving Git/re-review filename
+                // decorations intact. Labels remain readable without colour.
+                if (label.emphasis === 'important') {
+                    // VS Code's resource decoration CSS overrides ThemeIcon colour
+                    // with !important. An SVG preserves amber alongside purple names.
+                    item.iconPath = {
+                        light: Uri.file(this.asAbsolutePath('resources/enrichment/important-light.svg')),
+                        dark: Uri.file(this.asAbsolutePath('resources/enrichment/important-dark.svg')),
+                    };
+                } else if (label.emphasis !== 'normal') {
+                    item.iconPath = new ThemeIcon(label.emphasis === 'low' ? 'arrow-down' : 'history', new ThemeColor('descriptionForeground'));
+                }
             } else { this.enrichmentRowLabels.delete(element.dstAbsPath); }
         }
         return item;

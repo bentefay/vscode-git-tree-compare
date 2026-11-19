@@ -60,18 +60,19 @@ describe('Git Tree Compare in the extension host', () => {
         const data = { version: 1, snapshotId: snapshot.id, producer: 'Integration agent', summary: 'Explain the example edit.',
             files: [{ path: 'example.txt', priority: 'important', kind: 'behaviour', reason: 'Review this edit.', annotations: [
                 { side: 'after', startLine: 1, endLine: 1, title: 'Review explanation', body: '<script>not executable</script>', scope: 'file' },
-            ] }], guide: [{ path: 'example.txt', title: 'Start with the example', description: 'Read the edit.', annotation: 0 }] };
+            ] }], guide: [{ path: 'example.txt', title: '1. Start with the example', description: 'Read the edit.', annotation: 0 }] };
         const output = path.join(process.env.GTC_TEST_RESULTS, 'enrichment.json');
         await fs.writeFile(output, JSON.stringify(data));
         const file = path.join(root, 'example.txt'), original = await fs.readFile(file);
         try {
             await enrichment.importFile(root, output);
-            await eventually(() => enrichment.getState(root)?.current === true);
+            await eventually(() => enrichment.getState(root)?.data?.snapshotId === snapshot.id && enrichment.getState(root)?.current === true);
             const [base] = await provider.getChildren();
             const node = (await provider.getChildren(base)).find(n => n.dstAbsPath === file);
             const checkbox = provider.getTreeItem(node).checkboxState;
             assert.match(provider.getTreeItem(node).description, /important.*behaviour/);
             const [step] = enrichment.getChildren(); assert.equal(step.title, 'Start with the example');
+            assert.equal(enrichment.getTreeItem(step).label, '1. Start with the example');
             assert.equal(enrichment.controller.commentingRangeProvider, undefined);
             await enrichment.openStep(root, 0);
             await eventually(() => enrichment.threads.length > 0);
@@ -90,7 +91,7 @@ describe('Git Tree Compare in the extension host', () => {
             assert.equal(enrichment.getChildren()[0].stale, true);
             await fs.writeFile(file, original);
             await enrichment.refresh();
-            await eventually(() => enrichment.getState(root)?.current === true);
+            await eventually(() => enrichment.getState(root)?.data?.snapshotId === snapshot.id && enrichment.getState(root)?.current === true);
             await enrichment.openFile(root, 'example.txt', 0);
             await eventually(() => enrichment.threads.length > 0);
             const document = await vscode.workspace.openTextDocument(file);
@@ -103,6 +104,62 @@ describe('Git Tree Compare in the extension host', () => {
         } finally {
             await vscode.commands.executeCommand('workbench.action.closeAllEditors');
             await fs.writeFile(file, original);
+            await fs.rm(path.join(root, '.git/git-tree-compare/enrichment'), { recursive: true, force: true });
+            await enrichment.refresh();
+        }
+    });
+
+    it('opens every linked guide target and its exact side/range without changing review colours', async () => {
+        const core = require('../../shared/enrichment.cjs');
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        await enrichment.refresh();
+        const comparison = provider.getEnrichmentComparisons().find(c => c.root === root);
+        const snapshot = await core.context(root, comparison.selection);
+        const data = { version: 2, snapshotId: snapshot.id, producer: 'Linked guide fixture', summary: 'Compare the changed word and the new file.',
+            files: [
+                { path: 'example.txt', priority: 'important', labels: ['behaviour', 'schema'], reason: 'Review the changed contract.', annotations: [] },
+                { path: 'committed.txt', priority: 'low', labels: ['plumbing'], reason: 'Routine supporting change.', annotations: [] },
+            ],
+            guide: [{ title: '1. Follow the change', description: 'Understand the core decision and the supporting propagation.', links: [
+                { path: 'example.txt', label: 'Read the original contract', range: { side: 'before', startLine: 1, endLine: 1 } },
+                { path: 'committed.txt', label: 'Follow the supporting change', range: { side: 'after', startLine: 1, endLine: 1 } },
+            ] }], brief: { visuals: [], focus: [], evidence: [], unknowns: [] } };
+        const output = path.join(process.env.GTC_TEST_RESULTS, 'linked-guide.json');
+        await fs.writeFile(output, JSON.stringify(data));
+        const [base] = await provider.getChildren();
+        const nodes = await provider.getChildren(base);
+        const important = nodes.find(n => n.dstAbsPath === path.join(root, 'example.txt'));
+        const plumbing = nodes.find(n => n.dstAbsPath === path.join(root, 'committed.txt'));
+        const originalUri = provider.getTreeItem(important).resourceUri?.toString();
+        try {
+            await enrichment.importFile(root, output);
+            await eventually(() => enrichment.getState(root)?.data?.snapshotId === snapshot.id && enrichment.getState(root)?.current === true);
+            assert.match(provider.getTreeItem(important).iconPath.dark.fsPath, /important-dark\.svg$/);
+            assert.match(provider.getTreeItem(important).iconPath.light.fsPath, /important-light\.svg$/);
+            assert.equal(provider.getTreeItem(important).resourceUri?.toString(), originalUri, 'Attention must not overwrite filename decorations');
+            assert.equal(provider.getTreeItem(plumbing).iconPath.color.id, 'descriptionForeground');
+            assert.match(provider.getTreeItem(plumbing).description, /low attention.*plumbing/);
+            const [step] = enrichment.getChildren(), targets = enrichment.getChildren(step);
+            assert.equal(targets.length, 2); assert.equal(enrichment.getTreeItem(step).label, '1. Follow the change');
+            for (const [index, target] of targets.entries()) {
+                const command = enrichment.getTreeItem(target).command;
+                await vscode.commands.executeCommand(command.command, ...command.arguments);
+                const link = data.guide[0].links[index];
+                const uri = provider.enrichmentUris(root, link.path)[link.range.side];
+                const editor = await eventually(() => vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === uri.toString()));
+                assert.equal(editor.selection.start.line, 0);
+                assert.equal(editor.selection.end.character, editor.document.lineAt(0).text.length);
+            }
+            // A stale tree command must not resolve the same index in a newer publication.
+            let opened = 0;
+            const originalOpen = provider.openEnrichmentFile;
+            provider.openEnrichmentFile = async () => { opened++; };
+            try {
+                await enrichment.openStep(root, 0, 0, 'superseded-publication');
+                assert.equal(opened, 0);
+            } finally { provider.openEnrichmentFile = originalOpen; }
+        } finally {
+            await vscode.commands.executeCommand('workbench.action.closeAllEditors');
             await fs.rm(path.join(root, '.git/git-tree-compare/enrichment'), { recursive: true, force: true });
             await enrichment.refresh();
         }
@@ -684,6 +741,11 @@ describe('Repository review workflow', () => {
 
     it('reveals the selected local path and rechecks existence before delegating', async () => {
         const node = await find(reviewPath);
+        // The preceding concurrency test deliberately leaves this file modified
+        // since review. Establish this test's own approved state before asserting
+        // the plain local-file context, regardless of background refresh timing.
+        await mark(node);
+        assert.equal(checked(node), true);
         assert.equal(provider.getTreeItem(node).contextValue, 'file-local');
         const original = vscode.commands.executeCommand;
         const calls = [];

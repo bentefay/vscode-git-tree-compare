@@ -3,7 +3,7 @@
   "additionalProperties": false,
   "properties": {
     "version": {
-      "const": 1
+      "const": 2
     },
     "snapshotId": {
       "type": "string",
@@ -21,6 +21,7 @@
     },
     "files": {
       "type": "array",
+      "minItems": 0,
       "maxItems": 2000,
       "items": {
         "type": "object",
@@ -33,22 +34,32 @@
           },
           "priority": {
             "enum": [
+              "low",
               "normal",
               "important"
             ]
           },
-          "kind": {
-            "enum": [
-              "behaviour",
-              "plumbing",
-              "tests",
-              "docs",
-              "formatting",
-              "whitespace",
-              "dependencies",
-              "generated",
-              "other"
-            ]
+          "labels": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "enum": [
+                "behaviour",
+                "refactor",
+                "plumbing",
+                "configuration",
+                "schema",
+                "tests",
+                "docs",
+                "dependencies",
+                "generated",
+                "formatting",
+                "whitespace",
+                "other"
+              ]
+            },
+            "uniqueItems": true
           },
           "reason": {
             "type": "string",
@@ -57,56 +68,17 @@
           },
           "annotations": {
             "type": "array",
+            "minItems": 0,
             "maxItems": 20,
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "side": {
-                  "enum": [
-                    "before",
-                    "after"
-                  ]
-                },
-                "startLine": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "endLine": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "title": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 200
-                },
-                "body": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 6000
-                },
-                "scope": {
-                  "enum": [
-                    "file",
-                    "comparison"
-                  ]
-                }
-              },
-              "required": [
-                "side",
-                "startLine",
-                "endLine",
-                "title",
-                "body"
-              ]
+              "$ref": "#/$defs/annotation"
             }
           }
         },
         "required": [
           "path",
           "priority",
-          "kind",
+          "labels",
           "reason",
           "annotations"
         ]
@@ -114,16 +86,12 @@
     },
     "guide": {
       "type": "array",
+      "minItems": 0,
       "maxItems": 100,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "path": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096
-          },
           "title": {
             "type": "string",
             "minLength": 1,
@@ -134,17 +102,150 @@
             "minLength": 1,
             "maxLength": 2000
           },
-          "annotation": {
-            "type": "integer",
-            "minimum": 0
+          "links": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "items": {
+              "$ref": "#/$defs/link"
+            }
           }
         },
         "required": [
-          "path",
           "title",
-          "description"
+          "description",
+          "links"
         ]
       }
+    },
+    "brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "visuals": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 3,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "flow"
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "steps": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 12,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200
+                        },
+                        "links": {
+                          "type": "array",
+                          "minItems": 0,
+                          "maxItems": 12,
+                          "items": {
+                            "$ref": "#/$defs/link"
+                          }
+                        }
+                      },
+                      "required": [
+                        "label",
+                        "links"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "title",
+                  "steps"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "tree",
+                      "pseudocode",
+                      "diff"
+                    ]
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "body": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  },
+                  "links": {
+                    "type": "array",
+                    "minItems": 0,
+                    "maxItems": 12,
+                    "items": {
+                      "$ref": "#/$defs/link"
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "title",
+                  "body",
+                  "links"
+                ]
+              }
+            ]
+          }
+        },
+        "focus": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/linkedText"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/linkedText"
+          }
+        },
+        "unknowns": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/linkedText"
+          }
+        }
+      },
+      "required": [
+        "visuals",
+        "focus",
+        "evidence",
+        "unknowns"
+      ]
     }
   },
   "required": [
@@ -153,7 +254,145 @@
     "producer",
     "summary",
     "files",
-    "guide"
+    "guide",
+    "brief"
   ],
-  "$schema": "https://json-schema.org/draft/2020-12/schema"
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "side": {
+          "enum": [
+            "before",
+            "after"
+          ]
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "scope": {
+          "enum": [
+            "file",
+            "comparison"
+          ]
+        }
+      },
+      "required": [
+        "side",
+        "startLine",
+        "endLine"
+      ]
+    },
+    "annotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "side": {
+          "enum": [
+            "before",
+            "after"
+          ]
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "scope": {
+          "enum": [
+            "file",
+            "comparison"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 6000
+        }
+      },
+      "required": [
+        "side",
+        "startLine",
+        "endLine",
+        "title",
+        "body"
+      ]
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "annotation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "range": {
+          "$ref": "#/$defs/range"
+        }
+      },
+      "required": [
+        "path",
+        "label"
+      ],
+      "not": {
+        "required": [
+          "annotation",
+          "range"
+        ]
+      }
+    },
+    "linkedText": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "links": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 12,
+          "items": {
+            "$ref": "#/$defs/link"
+          }
+        }
+      },
+      "required": [
+        "text",
+        "links"
+      ]
+    }
+  },
+  "description": "Version 2. CLI validation additionally checks important-file guide coverage, paths, line bounds, content freshness, 200 total annotations, 500 total links and whitespace claims. Existing version 1 publications remain readable."
 }

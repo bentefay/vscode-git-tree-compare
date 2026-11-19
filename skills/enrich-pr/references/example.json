@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "snapshotId": "0000000000000000000000000000000000000000000000000000000000000000",
+  "producer": "Example agent — replace with your name",
+  "summary": "Invitation creation now requires an organisation-level permission check before saving. Callers forward the organisation ID so the check can run at the creation boundary.",
+  "files": [
+    { "path": "src/invitations.ts", "priority": "important", "labels": ["behaviour"], "reason": "Defines which organisation's permission is checked and ensures denial precedes persistence.", "annotations": [] },
+    { "path": "src/invitation-route.ts", "priority": "low", "labels": ["plumbing"], "reason": "Forwards the existing organisation ID; the permission decision lives in invitations.ts.", "annotations": [] },
+    { "path": "test/invitations.test.ts", "priority": "normal", "labels": ["tests"], "reason": "Adds an observable denial case; execution has not been verified.", "annotations": [] }
+  ],
+  "guide": [
+    {
+      "title": "Check permissions before creating an invitation",
+      "description": "The creation function checks permission before persisting. Verify that it checks the requested organisation rather than the sender's default organisation. The route only threads the existing organisation ID through; the substantive decision is in the creation function.",
+      "links": [
+        { "path": "src/invitations.ts", "label": "Check permission before persistence", "range": { "side": "after", "startLine": 10, "endLine": 18 } },
+        { "path": "src/invitation-route.ts", "label": "Follow the organisation ID through the route" },
+        { "path": "test/invitations.test.ts", "label": "Inspect the denial regression test" }
+      ]
+    }
+  ],
+  "brief": {
+    "visuals": [
+      { "kind": "flow", "title": "Creation path", "steps": [
+        { "label": "Route forwards organisation ID", "links": [{ "path": "src/invitation-route.ts", "label": "Open route diff" }] },
+        { "label": "Check permission, then persist", "links": [{ "path": "src/invitations.ts", "label": "Open creation diff" }] }
+      ] }
+    ],
+    "focus": [{ "text": "Review the organisation used by the permission check and the ordering before persistence.", "links": [{ "path": "src/invitations.ts", "label": "Inspect the decision" }] }],
+    "evidence": [{ "text": "The added denial test asserts that an unauthorised request does not create an invitation. I inspected the test but did not execute it.", "links": [{ "path": "test/invitations.test.ts", "label": "Read the denial assertion" }] }],
+    "unknowns": [{ "text": "Test execution has not been verified. No originating spec was supplied; intent above is inferred from the implementation and test.", "links": [] }]
+  }
+}

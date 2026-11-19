@@ -2,16 +2,17 @@ import * as path from 'path';
 import { Worker } from 'worker_threads';
 import { watch, FSWatcher } from 'fs';
 import { comments, commands, window, workspace, ExtensionContext, Disposable, EventEmitter, TreeDataProvider,
-    TreeItem, TreeItemCollapsibleState, ThemeIcon, CommentController, CommentThread, CommentThreadCollapsibleState,
+    TreeItem, TreeItemCollapsibleState, ThemeIcon, ThemeColor, CommentController, CommentThread, CommentThreadCollapsibleState,
     CommentMode, MarkdownString, Range, OutputChannel, WebviewPanel, ViewColumn, Uri } from 'vscode';
-import type { Annotation, EnrichmentState, FileInfo, Selection, Snapshot } from '../shared/enrichment.cjs';
+import type { Annotation, LineRange, DiffLink, EnrichmentState, FileInfo, Selection, Snapshot } from '../shared/enrichment.cjs';
 import { GitTreeCompareProvider } from './treeProvider';
 import { briefHtml } from './enrichmentBrief';
+import { fileLabel, guideTitle, diffLinks, EnrichmentLabel } from './enrichmentPresentation';
 
 const prefix = 'gitTreeCompare.enrichment.';
 type Comparison = ReturnType<GitTreeCompareProvider['getEnrichmentComparisons']>[number];
 interface Entry { comparison: Comparison; signature: string; revision: number; state?: EnrichmentState; files: Map<string, FileInfo>; fresh: Set<string>; watcher?: FSWatcher }
-interface Step { root: string; index: number; title: string; description: string; stale: boolean }
+interface Step { root: string; index: number; link?: number; title: string; description: string; stale: boolean; publication?: string }
 
 class EnrichmentWorker implements Disposable {
     private worker?: Worker;
@@ -99,7 +100,7 @@ export class EnrichmentController implements TreeDataProvider<Step>, Disposable 
         }));
         register('openBrief', () => this.openBrief());
         register('refresh', () => this.refresh());
-        register('openStep', (step: Step) => this.openStep(step.root, step.index));
+        register('openStep', (step: Step) => this.openStep(step.root, step.index, step.link, step.publication));
         register('exportContext', () => this.exportContext());
         register('import', async () => {
             const root = this.requireRoot();
@@ -215,51 +216,67 @@ export class EnrichmentController implements TreeDataProvider<Step>, Disposable 
         return snapshot;
     }
     getState(root: string): EnrichmentState | undefined { return this.entries.get(root)?.state; }
-    label(root: string, file: string): { description: string; tooltip: string } | undefined {
+    label(root: string, file: string): EnrichmentLabel | undefined {
         const entry = this.entries.get(root), info = entry?.files.get(file);
-        if (!entry || !info) { return undefined; }
-        const stale = !entry.fresh.has(file);
-        return { description: `[${[info.priority === 'important' ? 'important' : '', info.kind, stale ? 'stale' : ''].filter(Boolean).join(' · ')}]`,
-            tooltip: `${info.reason}\n${entry.state?.data?.producer ?? 'Agent'} explanation${stale ? ' — out of date' : ''}${!entry.state?.current ? ' · comparison changed' : ''}. Not a review approval.` };
+        return entry && info ? fileLabel(info, entry.state?.data?.producer ?? 'Agent', entry.fresh.has(file), Boolean(entry.state?.current)) : undefined;
     }
-    getChildren(): Step[] {
-        const root = this.host.enrichmentRepository;
+    getChildren(parent?: Step): Step[] {
+        const root = parent?.root ?? this.host.enrichmentRepository;
         const entry = root ? this.entries.get(root) : undefined;
         if (!root || !entry?.state?.data) { return []; }
-        return entry.state.data.guide.map((step, index) => ({ root, index, title: step.title,
-            description: step.description, stale: !entry.state!.current }));
+        if (parent) {
+            if (parent.link !== undefined || parent.publication !== entry.state.publicationId) { return []; }
+            return (entry.state.data.guide[parent.index]?.links ?? []).map((link, index) => ({ root, index: parent.index, link: index,
+                title: link.label, description: link.path, stale: !entry.state!.current || !entry.fresh.has(link.path), publication: entry.state!.publicationId }));
+        }
+        return entry.state.data.guide.map((step, index) => ({ root, index, title: guideTitle(step.title),
+            description: step.description, stale: !entry.state!.current, publication: entry.state!.publicationId }));
     }
     getTreeItem(step: Step): TreeItem {
-        const item = new TreeItem(`${step.index + 1}. ${step.title}`, TreeItemCollapsibleState.None);
-        item.id = `${step.root}:guide:${step.index}`;
-        item.description = step.stale ? 'out of date' : undefined;
+        const isLink = step.link !== undefined;
+        const item = new TreeItem(isLink ? step.title : `${step.index + 1}. ${guideTitle(step.title)}`,
+            isLink ? TreeItemCollapsibleState.None : TreeItemCollapsibleState.Collapsed);
+        item.id = `${step.root}:guide:${step.index}${isLink ? `:link:${step.link}` : ''}`;
+        item.description = [isLink ? step.description : '', step.stale ? 'out of date' : ''].filter(Boolean).join(' · ');
         item.tooltip = step.description;
-        item.iconPath = new ThemeIcon(step.stale ? 'history' : 'book');
-        item.command = { command: prefix + 'openStep', title: 'Open review step', arguments: [step] };
+        const entry = this.entries.get(step.root);
+        const link = isLink ? entry?.state?.data?.guide[step.index]?.links[step.link!] : undefined;
+        const important = link && entry?.files.get(link.path)?.priority === 'important';
+        item.iconPath = new ThemeIcon(step.stale ? 'history' : important ? 'star-full' : isLink ? 'go-to-file' : 'book',
+            step.stale ? new ThemeColor('descriptionForeground') : important ? new ThemeColor('gitTreeCompare.importantForeground') : undefined);
+        item.command = { command: prefix + 'openStep', title: 'Open review diff', arguments: [step] };
         return item;
     }
-    private noteFresh(entry: Entry, file: string, note: Annotation): boolean {
+    private noteFresh(entry: Entry, file: string, note: LineRange): boolean {
         return entry.fresh.has(file) && (note.scope === 'file' || Boolean(entry.state?.current));
     }
-    async openStep(root: string, index: number): Promise<void> {
-        const step = this.entries.get(root)?.state?.data?.guide[index];
-        if (step) { await this.openFile(root, step.path, step.annotation); }
+    async openStep(root: string, index: number, linkIndex = 0, publication?: string): Promise<void> {
+        const state = this.entries.get(root)?.state;
+        if (publication !== undefined && publication !== state?.publicationId) { return; }
+        const link = state?.data?.guide[index]?.links[linkIndex];
+        if (link) { await this.openLink(root, link); }
     }
-    async openFile(root: string, file: string, annotation?: number): Promise<void> {
+    async openLink(root: string, link: DiffLink): Promise<void> {
+        await this.openFile(root, link.path, link.annotation, link.range);
+    }
+    async openFile(root: string, file: string, annotation?: number, anchor?: LineRange): Promise<void> {
         const entry = this.entries.get(root), info = entry?.files.get(file);
         if (!entry || !info) { return; }
-        if (!this.host.enrichmentUris(root, file, entry.comparison.selection)) { throw new Error('The comparison changed. Refresh enrichment before opening this step.'); }
+        const uris = this.host.enrichmentUris(root, file, entry.comparison.selection);
+        if (!uris) { throw new Error('The comparison changed. Refresh enrichment before opening this step.'); }
         const note = annotation === undefined ? undefined : info.annotations[annotation];
-        const fresh = note && this.noteFresh(entry, file, note);
-        this.requestedNote = fresh ? { root, file, note } : undefined;
-        await this.host.openEnrichmentFile(root, file, fresh ? note.side : undefined,
-            fresh ? new Range(note.startLine - 1, 0, note.endLine - 1, 0) : undefined);
+        const target = note ?? anchor;
+        const dirty = workspace.textDocuments.some(doc => doc.uri.toString() === uris.after.toString() && doc.isDirty);
+        const fresh = target && !dirty && this.noteFresh(entry, file, target);
+        this.requestedNote = fresh && note ? { root, file, note } : undefined;
+        await this.host.openEnrichmentFile(root, file, fresh ? target.side : undefined,
+            fresh ? new Range(target.startLine - 1, 0, target.endLine - 1, 0) : undefined);
         this.renderNotes();
-        if (fresh) {
-            const uri = this.host.enrichmentUris(root, file, entry.comparison.selection)?.[note.side];
-            const thread = this.threads.find(t => t.uri.toString() === uri?.toString() && t.range?.start.line === note.startLine - 1);
+        if (fresh && note) {
+            const uri = uris[note.side];
+            const thread = this.threads.find(t => t.uri.toString() === uri.toString() && t.range?.start.line === note.startLine - 1);
             if (thread) { thread.collapsibleState = CommentThreadCollapsibleState.Expanded; this.requestedNote = undefined; }
-        } else if (note) { void window.showInformationMessage('This explanation is out of date. Opened the current diff without its old line anchor.'); }
+        } else if (target && !fresh) { void window.showInformationMessage('This explanation is out of date. Opened the current diff without its old line anchor.'); }
     }
     private renderNotes(): void {
         const desired = new Set<string>();
@@ -311,9 +328,13 @@ export class EnrichmentController implements TreeDataProvider<Step>, Disposable 
             this.panel.onDidDispose(() => { this.panel = undefined; this.panelRoot = undefined; }, null, this.subscriptions);
             this.panel.webview.onDidReceiveMessage(async message => {
                 const root = this.panelRoot, state = root && this.entries.get(root)?.state;
-                if (!root || !state || !message || !Number.isSafeInteger(message.index) || message.index < 0) { return; }
+                if (!root || !state || !message || message.publication !== state.publicationId || !Number.isSafeInteger(message.index) || message.index < 0) { return; }
                 try {
-                    if (message.action === 'step') { await this.openStep(root, message.index); }
+                    if (message.action === 'step') { await this.openStep(root, message.index, 0, message.publication); }
+                    if (message.action === 'link' && state.data) {
+                        const link = diffLinks(state.data)[message.index];
+                        if (link) { await this.openLink(root, link); }
+                    }
                     if (message.action === 'file') {
                         const file = state.data?.files[message.index];
                         if (file && (message.annotation === undefined || Number.isSafeInteger(message.annotation) && message.annotation >= 0 && message.annotation < file.annotations.length)) {

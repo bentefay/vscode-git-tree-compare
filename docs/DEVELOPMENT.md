@@ -211,8 +211,47 @@ No enrichment automatically checks a review checkbox or hides a file.
 
 Snapshots and runs are local and retained until manually removed; they are not
 synced with review approvals. A result is limited to 2 MiB, 2,000 files, 200 notes
-and 100 guide steps. Binary, oversized and non-regular files can receive summaries,
+and 100 guide steps, with at most 500 diff links. Binary, oversized and non-regular files can receive summaries,
 but cannot receive code annotations. No server, model API or credentials are
 required. If an agent's sandbox cannot publish into the Git directory, it can
 write validated JSON to an allowed location; use **Import Enrichment JSON** in
 the extension. The import validates freshness again.
+
+
+### Enrichment format version 2
+
+`enrich schema` describes the current authoring format. Snapshot/storage versions
+stay at 1; new analysis documents use version 2. Version 1 analyses remain readable
+and publishable for existing installed skills. They are adapted in memory to the
+new UI without rewriting immutable history or inventing coverage. Newly authored
+version 2 results must link every important file from at least one guide step.
+
+A file has independent `priority` (`important`, `normal`, `low`), one to four
+`labels`, a reason and optional annotations. `plumbing` describes mechanical
+propagation of a change and usually receives low attention; it never forces that
+priority. Generated content, tests and configuration can all be important.
+Whitespace claims remain content-validated. The main tree shows at most two tags
+plus a stale marker; tooltips and the brief show all labels. Attention colours
+apply to native icons so they do not override Git or last-review filename colours.
+File-tree importance stars use light/dark SVGs because VS Code's resource
+decoration CSS overrides ThemeIcon colours. Theme authors can customise guide
+link icons and brief tags with `gitTreeCompare.importantForeground`.
+
+Guide steps contain an unnumbered title, an explanation and 1–12 labelled diff
+links. Each link targets a listed file and optionally an annotation index or an
+explicit 1-based inclusive before/after range, never both. Native steps expand to
+individual links; clicking the step opens its first target. The UI also removes
+leading numeric prefixes from old agent titles. Range links are validated against
+the actual content, and stale/dirty ranges open a whole-file diff without using
+old anchors. Commands from superseded publications are ignored.
+
+The brief adds linked `focus`, `evidence` and `unknowns` entries, plus up to three
+small visuals: linked flow steps, a text tree, pseudocode or a diff sketch. These
+are bounded data rendered by the extension, with no arbitrary HTML, external
+resources, executable Markdown or diagram runtime. Guide explanations and their
+links are visible together. Filters match any label as well as attention.
+
+The bundled skill contains the writing guidance and a complete linked example
+under `skills/enrich-pr/references/example.json`. The CLI tests validate that
+example against real disposable Git content. Global skill installation copies
+references along with the launcher; rerun the installer to update installed skills.

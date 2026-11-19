@@ -8,3 +8,4 @@
 !dist/extension.js.LICENSE.txt
 !shared/enrichment.cjs
 !shared/enrichment-worker.cjs
+!shared/enrichment-format.cjs

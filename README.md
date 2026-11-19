@@ -210,9 +210,23 @@ complementary views from one analysis:
 - **File labels and explanations:** important/plumbing/tests/whitespace labels in
   the existing tree, plus collapsed, read-only explanations on exact code ranges.
 - **Review Guide:** a pane that starts collapsed, with a suggested reading order
-  and links to the normal comparison diff.
-- **Review Brief:** an on-demand overview with a summary, reading order and
-  filterable file cards. Open it from the view menu or Command Palette.
+  and linked explanations covering every important file. Expand a step to open
+  its individual file/range targets; titles are numbered once by the UI.
+- **Review Brief:** an on-demand overview with linked flow diagrams or code
+  sketches, the full guide, review focus, evidence, unknowns and filterable file cards. Open it from the view menu or Command Palette.
+
+Attention is independent of the type of change: **important**, **normal**, or
+**low attention**. Important files get an amber star; low-attention files get a
+muted arrow. Existing purple changed-since-review filenames remain visible.
+Labels can be combined: a generated schema can be important. **Plumbing** means
+routine parameter/field forwarding or repetitive call-site changes; its guide
+should link to the substantive decision elsewhere. Labels do not approve files.
+
+Guide steps can link to several related diffs, including exact before/after line
+ranges or inline explanations. Every important file must have a guide link;
+validation rejects incomplete coverage. The brief also links claims and flow
+steps directly to their supporting diffs. Old analyses remain readable, including
+previously numbered titles.
 
 Install the skill from this source checkout:
 

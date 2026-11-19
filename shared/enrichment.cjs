@@ -2,6 +2,7 @@
 
 // Shared by the CLI and the extension's worker. No VS Code or model dependency.
 const fs = require('node:fs/promises');
+const format = require('./enrichment-format.cjs');
 const { constants } = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
@@ -200,6 +201,7 @@ function object(value, allowed, where) {
 function string(value, max, where) { if (typeof value !== 'string' || !value.trim() || value.length > max) fail(`${where}: expected nonempty text, at most ${max} characters`); }
 function array(value, max, where) { if (!Array.isArray(value) || value.length > max) fail(`${where}: expected an array of at most ${max} entries`); }
 function validate(data, snapshot) {
+    if (data?.version === 2) return format.validate(data, snapshot);
     object(data, ['version', 'snapshotId', 'producer', 'summary', 'files', 'guide'], 'result');
     if (data.version !== 1 || !ID.test(data.snapshotId) || data.snapshotId !== snapshot.id) fail('Expected version 1 and the exported snapshotId');
     string(data.producer, 100, 'producer'); string(data.summary, 6000, 'summary');
@@ -249,15 +251,21 @@ async function sideBytes(snapshot, file, side) {
     } finally { await handle.close(); }
 }
 async function validateContent(data, snapshot) {
+    data = format.normalize(data);
     const byPath = new Map(snapshot.files.map(f => [f.path, f]));
+    const ranges = new Map();
+    for (const link of format.links(data)) if (link.range) {
+        if (!ranges.has(link.path)) ranges.set(link.path, []);
+        ranges.get(link.path).push(link.range);
+    }
     await bounded(data.files, async file => {
         const source = byPath.get(file.path), cache = new Map();
         const bytes = async side => { if (!cache.has(side)) cache.set(side, await sideBytes(snapshot, source, side)); return cache.get(side); };
-        for (const note of file.annotations) {
+        for (const note of [...file.annotations, ...(ranges.get(file.path) || [])]) {
             const content = await bytes(note.side);
             if (content.includes(0) || note.endLine > content.toString('utf8').split('\n').length) fail(`Annotation is outside the text in ${file.path}`);
         }
-        if (file.kind === 'whitespace') {
+        if (file.labels.includes('whitespace')) {
             const a = source.before ? await bytes('before') : Buffer.alloc(0), b = source.after ? await bytes('after') : Buffer.alloc(0);
             if (a.includes(0) || b.includes(0) || !source.before || !source.after || source.before.mode !== source.after.mode || a.equals(b) || a.toString('utf8').replace(/\s/g, '') !== b.toString('utf8').replace(/\s/g, '')) fail(`Whitespace label is not supported by the actual diff: ${file.path}`);
         }
@@ -307,7 +315,7 @@ async function load(repo, selection) {
     const now = await capture(repo, { ...selection, left, right });
     const oldFiles = new Map(snapshot.files.map(f => [f.path, f]));
     const fresh = now.files.filter(f => oldFiles.get(f.path)?.fingerprint === f.fingerprint && !oldFiles.get(f.path)?.unsupported).map(f => f.path);
-    return { directory: loc.directory, publicationId: pointer.run, current: snapshot.id === now.id, fresh, data: run.data, snapshot };
+    return { directory: loc.directory, publicationId: pointer.run, current: snapshot.id === now.id, fresh, data: format.normalize(run.data), snapshot };
 }
 
 module.exports = { KINDS, LIMIT, hash, relative, location, saveSelection, capture, context, validate, validateFile, publish, load, readJSON };

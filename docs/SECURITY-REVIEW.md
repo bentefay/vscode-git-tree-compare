@@ -113,3 +113,12 @@ The globally installed skill contains the trusted local CLI path, not credential
 Its installer uses the locked `skills` package with telemetry disabled. Automated
 installation tests use disposable HOME, Codex and Claude directories. The VSIX
 ships only the core and worker, not the skills installer or its dependencies.
+
+
+Version 2 enrichment validates multiple diff targets, every explicit line range,
+important-file guide coverage and bounded visual data in the existing worker.
+Visuals use escaped text and extension-owned markup; there is no new diagram
+library or agent-supplied script. Webview navigation includes the publication ID,
+so an old button cannot select the same index in a replacement analysis. Native
+guide commands likewise retain their publication identity. Attention icons do
+not change approval state or replace changed-since-review filename decorations.

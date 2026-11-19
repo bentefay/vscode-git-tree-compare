@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import core from '../../shared/enrichment.cjs';
+import format from '../../shared/enrichment-format.cjs';
 import { root as extensionRoot } from '../lib/process.mjs';
 
 async function fixture(t) {
@@ -70,7 +71,7 @@ test('worktree-local storage and CLI explicit targeting do not contaminate the s
     assert.equal(context.repo, linked); assert.equal(context.files.length, 0);
     assert.equal(JSON.parse(run('enrich', 'validate', '--repo', f.root, '--file', f.output)).valid, true);
     assert.equal(JSON.parse(run('enrich', 'publish', '--repo', f.root, '--file', f.output)).snapshotId, f.snapshot.id);
-    assert.equal(JSON.parse(run('enrich', 'schema')).properties.version.const, 1);
+    assert.equal(JSON.parse(run('enrich', 'schema')).properties.version.const, 2);
     assert.match(run('skills', 'install', '--global', '--dry-run'), /skills@1.5.26/);
 });
 test('the pinned skills installer installs functional helpers in an isolated user home', async t => {
@@ -103,8 +104,69 @@ test('publication rejects modified history and redirected storage; HTML renders 
     const { briefHtml } = createRequire(import.meta.url)('../../out/enrichmentBrief.js');
     const malicious = '<img src=x onerror="alert(1)">';
     const html = briefHtml({ current: true, fresh: ['file [x].txt'], snapshot: f.snapshot,
-        data: { ...f.data, summary: malicious, producer: malicious } });
+        data: format.normalize({ ...f.data, summary: malicious, producer: malicious }) });
     assert.ok(!html.includes(malicious));
     assert.match(html, /&lt;img/);
     assert.match(html, /default-src 'none'/);
+});
+
+test('linked guides enforce important-file coverage and validate all range links before replacing a publication', async t => {
+    const f = await fixture(t);
+    await writeFile(path.join(f.root, 'caller.txt'), 'forward\nargument\n');
+    const snapshot = await core.context(f.root, f.selection);
+    const data = format.normalize({ ...f.data, snapshotId: snapshot.id });
+    data.files.push({ path: 'caller.txt', priority: 'low', labels: ['plumbing', 'refactor'], reason: 'Forwards the argument to the substantive change.', annotations: [] });
+    data.guide[0].links.push({ path: 'caller.txt', label: 'Follow the parameter', range: { side: 'after', startLine: 2, endLine: 2 } });
+    data.brief.visuals = [{ kind: 'flow', title: 'Call path', steps: [
+        { label: 'Forward parameter', links: [data.guide[0].links[1]] },
+        { label: 'Change the word', links: [data.guide[0].links[0]] },
+    ] }];
+    data.brief.evidence = [{ text: 'Execution has not been verified.', links: [] }];
+    const save = () => writeFile(f.output, JSON.stringify(data)); await save();
+    const published = await core.publish(f.root, f.output);
+    const pointer = await readFile(published.file, 'utf8');
+    assert.equal((await core.load(f.root, f.selection)).data.guide[0].links.length, 2);
+    const original = data.guide[0].links.shift(); await save();
+    await assert.rejects(core.publish(f.root, f.output), /Important file missing.*file \[x\]/);
+    assert.equal(await readFile(published.file, 'utf8'), pointer, 'Invalid publication leaves the existing analysis intact');
+    data.guide[0].links.unshift(original);
+    data.guide[0].links[1].range.endLine = 500; await save();
+    await assert.rejects(core.validateFile(f.root, f.output), /outside the text/);
+    data.guide[0].links[1].range.endLine = 2;
+    data.brief.focus = [{ text: 'Look here.', links: [{ path: '../outside', label: 'Escape' }] }]; await save();
+    await assert.rejects(core.validateFile(f.root, f.output), /link.path/);
+    data.brief.focus = [];
+    data.files[1].labels.push('plumbing'); await save();
+    await assert.rejects(core.validateFile(f.root, f.output), /unique supported labels/);
+    data.files[1].labels.pop(); data.brief.visuals.push({ kind: 'html', title: 'Unsafe', body: '<script>execute()</script>', links: [] }); await save();
+    await assert.rejects(core.validateFile(f.root, f.output), /visual.kind/);
+});
+
+test('legacy guides migrate without losing targets, and numbered titles are presented once', async t => {
+    const f = await fixture(t);
+    f.data.guide[0].title = '1. 1. Review the word'; await f.save();
+    await core.publish(f.root, f.output);
+    const state = await core.load(f.root, f.selection);
+    assert.equal(state.data.version, 2);
+    assert.deepEqual(state.data.files[0].labels, ['behaviour']);
+    assert.deepEqual(state.data.guide[0].links[0], { path: 'file [x].txt', label: 'file [x].txt', annotation: 0 });
+    const { createRequire } = await import('node:module');
+    const require = createRequire(import.meta.url);
+    const { briefHtml } = require('../../out/enrichmentBrief.js');
+    const { guideTitle } = require('../../out/enrichmentPresentation.js');
+    assert.equal(guideTitle(state.data.guide[0].title), 'Review the word');
+    assert.equal(guideTitle('2.0 compatibility'), '2.0 compatibility');
+    assert.match(briefHtml(state), /class="guide-title"[^>]*>Review the word<\/button>/);
+});
+
+test('the bundled skill example validates against real captured source and range contents', async t => {
+    const f = await fixture(t);
+    const example = JSON.parse(await readFile(path.join(extensionRoot, 'skills/enrich-pr/references/example.json'), 'utf8'));
+    for (const file of example.files) {
+        await mkdir(path.dirname(path.join(f.root, file.path)), { recursive: true });
+        await writeFile(path.join(f.root, file.path), Array.from({ length: 20 }, (_, n) => `example line ${n + 1}`).join('\n'));
+    }
+    example.snapshotId = (await core.context(f.root, f.selection)).id;
+    await writeFile(f.output, JSON.stringify(example));
+    await core.validateFile(f.root, f.output);
 });

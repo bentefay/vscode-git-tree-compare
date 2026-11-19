@@ -465,12 +465,27 @@ describe('Packaged VSIX', function () {
     it('shows agent labels, a collapsed guide, native explanations and an interactive review brief', async () => {
         const core = require('../../shared/enrichment.cjs');
         const root = process.env.GTC_TEST_REPOSITORY;
+        await fs.writeFile(path.join(root, 'example.txt'), 'new change after the last human review\n');
+        await new Workbench().executeCommand('Git Tree Compare: Refresh');
         await new Workbench().executeCommand('Git Tree Compare: Refresh Enrichment');
         const snapshot = await core.context(root);
-        const data = { version: 1, snapshotId: snapshot.id, producer: 'UI fixture agent', summary: 'A small example change with a suggested reading order.',
-            files: [{ path: 'example.txt', priority: 'important', kind: 'behaviour', reason: 'Review the changed output.', annotations: [
+        const data = { version: 2, snapshotId: snapshot.id, producer: 'UI fixture agent', summary: 'A small example change with a linked reading order.',
+            files: [{ path: 'example.txt', priority: 'important', labels: ['behaviour', 'schema'], reason: 'Review the changed output.', annotations: [
                 { side: 'after', startLine: 1, endLine: 1, title: 'Why this line matters', body: 'This line changes the example output. Check it against the expected behaviour.', scope: 'file' },
-            ] }], guide: [{ path: 'example.txt', title: 'Review the example', description: 'Start here to understand the change.', annotation: 0 }] };
+            ] }, { path: 'committed.txt', priority: 'low', labels: ['plumbing'], reason: 'Routine support for the substantive example change.', annotations: [] }],
+            guide: [{ title: '1. Review the example', description: 'The output changes here. Follow the supporting file to see how it connects.', links: [
+                { path: 'example.txt', label: 'Inspect the changed output', annotation: 0 },
+                { path: 'committed.txt', label: 'Follow the supporting plumbing', range: { side: 'after', startLine: 1, endLine: 1 } },
+            ] }],
+            brief: {
+                visuals: [{ kind: 'flow', title: 'Change flow', steps: [
+                    { label: 'Supporting file', links: [{ path: 'committed.txt', label: 'Read the plumbing' }] },
+                    { label: 'Substantive output change', links: [{ path: 'example.txt', label: 'Review the decision', annotation: 0 }] },
+                ] }],
+                focus: [{ text: 'Check the output contract before reviewing the mechanical propagation.', links: [{ path: 'example.txt', label: 'Open the contract diff' }] }],
+                evidence: [{ text: 'Fixture data demonstrates navigation; this is not a claim of application correctness.', links: [] }],
+                unknowns: [{ text: 'The application behaviour needs human review.', links: [] }],
+            } };
         const output = path.join(process.env.GTC_TEST_RESULTS, 'enrichment.json');
         await fs.writeFile(output, JSON.stringify(data));
         await core.publish(root, output);
@@ -483,7 +498,20 @@ describe('Packaged VSIX', function () {
         }, 15000);
         assert.equal(await header.getAttribute('aria-expanded'), 'false', 'The new guide starts collapsed');
         await header.click();
-        await (await row('1. Review the example')).click();
+        const step = await row('1. Review the example');
+        assert.ok(!(await step.getText()).includes('1. 1.'), 'Existing numbered agent titles must have exactly one UI number');
+        const twister = await step.findElement(By.css('.monaco-tl-twistie'));
+        await twister.click();
+        await (await row('Follow the supporting plumbing')).click();
+        await browser.driver.wait(async () => (await browser.driver.findElements(By.css('.tab.active'))).length > 0, 10000);
+        await (await row('Inspect the changed output')).click();
+        await browser.driver.wait(async () => {
+            const file = await row('example.txt');
+            const icon = await file.findElement(By.css('.custom-view-tree-node-item-icon'));
+            const label = await file.findElement(By.css('.label-name'));
+            return (await browser.driver.executeScript('return getComputedStyle(arguments[0]).backgroundImage', icon)).includes('important-dark.svg') &&
+                (await browser.driver.executeScript('return getComputedStyle(arguments[0]).color', label)) === 'rgb(223, 165, 255)';
+        }, 15000, 'Important amber icons must coexist with purple changed-since-review filenames');
         await browser.driver.wait(async () => { for (const element of await browser.driver.findElements(By.css('.review-widget'))) { if (await element.isDisplayed() && (await element.getText()).includes('This line changes')) return true; } return false; }, 10000);
         await browser.takeScreenshot('enrichment-guide-and-explanation');
         await new Workbench().executeCommand('Git Tree Compare: Open Review Brief');
@@ -503,12 +531,24 @@ describe('Packaged VSIX', function () {
         try {
             await browser.driver.wait(enterBrief, 15000, 'Review Brief must render its filter and file cards');
             assert.match(await browser.driver.findElement(By.css('.summary')).getText(), /small example change/);
+            assert.match(await browser.driver.findElement(By.css('.guide p')).getText(), /Follow the supporting file/);
+            assert.equal((await browser.driver.findElements(By.css('.guide .diff-link'))).length, 2);
+            assert.equal((await browser.driver.findElements(By.css('.flow>li'))).length, 2);
+            assert.equal(await browser.driver.findElement(By.css('.guide-title')).getText(), 'Review the example');
+            await browser.driver.executeScript("const f=document.querySelector('#filter');f.value='plumbing';f.dispatchEvent(new Event('change'));");
+            assert.equal(await browser.driver.findElement(By.id('count')).getText(), '1 file');
+            const muted = await browser.driver.findElement(By.css('article[data-priority="low"] .tag.low'));
+            assert.equal(await browser.driver.executeScript('return getComputedStyle(arguments[0]).color', muted), await browser.driver.executeScript("return getComputedStyle(document.querySelector('.muted')).color"));
             await browser.driver.executeScript("const f=document.querySelector('#filter');f.value='important';f.dispatchEvent(new Event('change'));");
             assert.equal(await browser.driver.findElement(By.id('count')).getText(), '1 file');
             await browser.driver.switchTo().defaultContent();
             await browser.takeScreenshot('enrichment-review-brief');
             await enterBrief();
-            await browser.driver.findElement(By.css('button.file')).click();
+            await browser.driver.executeScript("document.querySelector('.guide').scrollIntoView({block:'start'});");
+            await browser.driver.switchTo().defaultContent();
+            await browser.takeScreenshot('enrichment-review-walkthrough');
+            await enterBrief();
+            await browser.driver.findElement(By.css('.guide .diff-link')).click();
         } finally { await browser.driver.switchTo().defaultContent(); }
         await browser.driver.wait(async () => (await browser.driver.findElements(By.css('.monaco-diff-editor'))).length > 0, 10000);
     });
