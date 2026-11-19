@@ -2415,18 +2415,6 @@ export class GitTreeCompareProvider implements TreeDataProvider<Element>, Dispos
                 this.enrichmentRowLabels.set(element.dstAbsPath, JSON.stringify(label));
                 item.description = [typeof item.description === 'string' ? item.description : '', label.description].filter(Boolean).join(' · ');
                 item.tooltip = `${item.tooltip ?? element.dstAbsPath}\n${label.tooltip}`;
-                // Attention colours belong to the icon, leaving Git/re-review filename
-                // decorations intact. Labels remain readable without colour.
-                if (label.emphasis === 'important') {
-                    // VS Code's resource decoration CSS overrides ThemeIcon colour
-                    // with !important. An SVG preserves amber alongside purple names.
-                    item.iconPath = {
-                        light: Uri.file(this.asAbsolutePath('resources/enrichment/important-light.svg')),
-                        dark: Uri.file(this.asAbsolutePath('resources/enrichment/important-dark.svg')),
-                    };
-                } else if (label.emphasis !== 'normal') {
-                    item.iconPath = new ThemeIcon(label.emphasis === 'low' ? 'arrow-down' : 'history', new ThemeColor('descriptionForeground'));
-                }
             } else { this.enrichmentRowLabels.delete(element.dstAbsPath); }
         }
         return item;

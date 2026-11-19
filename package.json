@@ -1186,7 +1186,7 @@
             },
             {
                 "id": "gitTreeCompare.importantForeground",
-                "description": "Agent-marked important changes: Review Guide link icons and Review Brief tags. File-tree stars use light/dark SVGs to preserve human review filename colours.",
+                "description": "Agent-marked important changes: Review Brief tags.",
                 "defaults": {
                     "dark": "#E2B64A",
                     "light": "#835A00",

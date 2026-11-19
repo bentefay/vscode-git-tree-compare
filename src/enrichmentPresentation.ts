@@ -7,15 +7,14 @@ export function guideTitle(title: string): string {
 export function fileTags(file: FileInfo): string[] {
     return [...(file.priority === 'important' ? ['important'] : file.priority === 'low' ? ['low attention'] : []), ...file.labels];
 }
-export interface EnrichmentLabel { description: string; tooltip: string; emphasis: 'important' | 'low' | 'normal' | 'stale' }
+export interface EnrichmentLabel { description: string; tooltip: string }
 export function fileLabel(file: FileInfo, producer: string, fresh: boolean, current: boolean): EnrichmentLabel {
     const tags = fileTags(file);
     // Compact in the tree; the complete classification remains in the tooltip/brief.
     const shown = tags.slice(0, 2);
     // An en space adds a small gap within VS Code's native description layout.
     return { description: `\u2002${[...shown, ...(!fresh ? ['stale'] : [])].join(' · ')}`,
-        tooltip: `${file.reason}\nLabels: ${tags.join(', ')}\n${producer} explanation${fresh ? '' : ' — out of date'}${current ? '' : ' · comparison changed'}. Not a review approval.`,
-        emphasis: !fresh ? 'stale' : file.priority };
+        tooltip: `${file.reason}\nLabels: ${tags.join(', ')}\n${producer} explanation${fresh ? '' : ' — out of date'}${current ? '' : ' · comparison changed'}. Not a review approval.` };
 }
 /** Stable index space for webview messages; URLs and arbitrary commands are never accepted. */
 export function diffLinks(data: Enrichment): DiffLink[] {

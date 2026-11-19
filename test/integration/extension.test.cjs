@@ -131,13 +131,13 @@ describe('Git Tree Compare in the extension host', () => {
         const important = nodes.find(n => n.dstAbsPath === path.join(root, 'example.txt'));
         const plumbing = nodes.find(n => n.dstAbsPath === path.join(root, 'committed.txt'));
         const originalUri = provider.getTreeItem(important).resourceUri?.toString();
+        const originalIcons = [important, plumbing].map(node => provider.getTreeItem(node).iconPath);
         try {
             await enrichment.importFile(root, output);
             await eventually(() => enrichment.getState(root)?.data?.snapshotId === snapshot.id && enrichment.getState(root)?.current === true);
-            assert.match(provider.getTreeItem(important).iconPath.dark.fsPath, /important-dark\.svg$/);
-            assert.match(provider.getTreeItem(important).iconPath.light.fsPath, /important-light\.svg$/);
+            assert.deepEqual([important, plumbing].map(node => provider.getTreeItem(node).iconPath), originalIcons,
+                'Enrichment must preserve the normal file/status icons');
             assert.equal(provider.getTreeItem(important).resourceUri?.toString(), originalUri, 'Attention must not overwrite filename decorations');
-            assert.equal(provider.getTreeItem(plumbing).iconPath.color.id, 'descriptionForeground');
             assert.match(provider.getTreeItem(plumbing).description, /low attention.*plumbing/);
             const [step] = enrichment.getChildren(), targets = enrichment.getChildren(step);
             assert.equal(targets.length, 2); assert.equal(enrichment.getTreeItem(step).label, '1. Follow the change');

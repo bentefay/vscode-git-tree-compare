@@ -231,11 +231,10 @@ A file has independent `priority` (`important`, `normal`, `low`), one to four
 propagation of a change and usually receives low attention; it never forces that
 priority. Generated content, tests and configuration can all be important.
 Whitespace claims remain content-validated. The main tree shows at most two tags
-plus a stale marker; tooltips and the brief show all labels. Attention colours
-apply to native icons so they do not override Git or last-review filename colours.
-File-tree importance stars use light/dark SVGs because VS Code's resource
-decoration CSS overrides ThemeIcon colours. Theme authors can customise guide
-link icons and brief tags with `gitTreeCompare.importantForeground`.
+plus a stale marker; tooltips and the brief show all labels. Enrichment preserves
+the tree's normal file/status icons and last-review filename colours. Attention
+colours apply only to Review Brief tags; theme authors can customise important
+tags with `gitTreeCompare.importantForeground`.
 
 Guide steps contain an unnumbered title, an explanation and 1–12 labelled diff
 links. Each link targets a listed file and optionally an annotation index or an

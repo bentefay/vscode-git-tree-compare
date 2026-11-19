@@ -2,8 +2,8 @@
 
 - Make enrichment guides linked walkthroughs with multiple diff/range targets per
   step and mandatory coverage of important files; fix duplicate guide numbering.
-- Add independent attention levels, combinable labels, amber important icons and
-  muted low-attention plumbing while preserving purple re-review filenames.
+- Add independent attention levels, combinable text labels and coloured Review
+  Brief tags while preserving normal file icons and purple re-review filenames.
 - Add linked flow diagrams, text sketches, review focus, evidence and unknowns to
   the Review Brief. Keep existing analyses readable and reject stale navigation.
 - Expand enrich-pr guidance with a validated example and explicit writing rules

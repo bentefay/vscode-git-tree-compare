@@ -509,9 +509,9 @@ describe('Packaged VSIX', function () {
             const file = await row('example.txt');
             const icon = await file.findElement(By.css('.custom-view-tree-node-item-icon'));
             const label = await file.findElement(By.css('.label-name'));
-            return (await browser.driver.executeScript('return getComputedStyle(arguments[0]).backgroundImage', icon)).includes('important-dark.svg') &&
+            return (await browser.driver.executeScript('return getComputedStyle(arguments[0]).backgroundImage', icon)).includes('status-modified.svg') &&
                 (await browser.driver.executeScript('return getComputedStyle(arguments[0]).color', label)) === 'rgb(223, 165, 255)';
-        }, 15000, 'Important amber icons must coexist with purple changed-since-review filenames');
+        }, 15000, 'Enrichment must retain the normal status icon and purple changed-since-review filename');
         await browser.driver.wait(async () => { for (const element of await browser.driver.findElements(By.css('.review-widget'))) { if (await element.isDisplayed() && (await element.getText()).includes('This line changes')) return true; } return false; }, 10000);
         await browser.takeScreenshot('enrichment-guide-and-explanation');
         await new Workbench().executeCommand('Git Tree Compare: Open Review Brief');

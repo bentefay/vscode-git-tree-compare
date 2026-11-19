@@ -239,11 +239,8 @@ export class EnrichmentController implements TreeDataProvider<Step>, Disposable 
         item.id = `${step.root}:guide:${step.index}${isLink ? `:link:${step.link}` : ''}`;
         item.description = [isLink ? step.description : '', step.stale ? 'out of date' : ''].filter(Boolean).join(' · ');
         item.tooltip = step.description;
-        const entry = this.entries.get(step.root);
-        const link = isLink ? entry?.state?.data?.guide[step.index]?.links[step.link!] : undefined;
-        const important = link && entry?.files.get(link.path)?.priority === 'important';
-        item.iconPath = new ThemeIcon(step.stale ? 'history' : important ? 'star-full' : isLink ? 'go-to-file' : 'book',
-            step.stale ? new ThemeColor('descriptionForeground') : important ? new ThemeColor('gitTreeCompare.importantForeground') : undefined);
+        item.iconPath = new ThemeIcon(step.stale ? 'history' : isLink ? 'go-to-file' : 'book',
+            step.stale ? new ThemeColor('descriptionForeground') : undefined);
         item.command = { command: prefix + 'openStep', title: 'Open review diff', arguments: [step] };
         return item;
     }

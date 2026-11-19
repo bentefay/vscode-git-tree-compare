@@ -120,5 +120,5 @@ important-file guide coverage and bounded visual data in the existing worker.
 Visuals use escaped text and extension-owned markup; there is no new diagram
 library or agent-supplied script. Webview navigation includes the publication ID,
 so an old button cannot select the same index in a replacement analysis. Native
-guide commands likewise retain their publication identity. Attention icons do
-not change approval state or replace changed-since-review filename decorations.
+guide commands likewise retain their publication identity. Enrichment labels do
+not change approval state, file icons or changed-since-review filename decorations.

@@ -216,8 +216,9 @@ complementary views from one analysis:
   sketches, the full guide, review focus, evidence, unknowns and filterable file cards. Open it from the view menu or Command Palette.
 
 Attention is independent of the type of change: **important**, **normal**, or
-**low attention**. Important files get an amber star; low-attention files get a
-muted arrow. Existing purple changed-since-review filenames remain visible.
+**low attention**. The tree uses text labels and keeps its normal file/status
+icons. The Review Brief colours important and low-attention tags. Existing
+purple changed-since-review filenames remain visible.
 Labels can be combined: a generated schema can be important. **Plumbing** means
 routine parameter/field forwarding or repetitive call-site changes; its guide
 should link to the substantive decision elsewhere. Labels do not approve files.
