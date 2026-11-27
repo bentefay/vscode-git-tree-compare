@@ -6,7 +6,7 @@ let queue = Promise.resolve();
 parentPort.on('message', message => {
     queue = queue.then(async () => {
         try {
-            const allowed = ['saveSelection', 'context', 'load', 'publish'];
+            const allowed = ['saveSelection', 'context', 'load', 'publish', 'clear'];
             if (!allowed.includes(message.method)) throw new Error('Unknown enrichment operation');
             parentPort.postMessage({ id: message.id, result: await core[message.method](...message.args) });
         } catch (error) { parentPort.postMessage({ id: message.id, error: error.message }); }

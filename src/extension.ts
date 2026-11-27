@@ -106,6 +106,26 @@ export async function activate(context: ExtensionContext) {
     const register = (name: string, callback: (...args: any[]) => any) => {
         disposables.push(commands.registerCommand(name, callback));
     };
+    register(NAMESPACE + '.clearReviewState', async () => {
+        const root = provider!.enrichmentRepository;
+        if (!root) { return; }
+        const choice = await window.showWarningMessage('Clear all review state for this repository?', {
+            modal: true,
+            detail: `${root}\n\nResets synced review checkmarks, last-reviewed diff baselines and review history across all branches of this repository. Removes this worktree's enrichment and local Orca notes, resets comparison selections and filters, and closes its clean diff tabs. Source files, Git history, settings and unsaved editors are preserved.`,
+        }, 'Clear State');
+        if (choice !== 'Clear State') { return; }
+        try {
+            orcaComments.assertCanClear(root);
+            await provider!.clearReviewState(root, async () => {
+                await enrichment.clear(root);
+                await orcaComments.clear(root);
+            });
+            await enrichment.refresh();
+        } catch (error) {
+            void window.showErrorMessage(`Could not clear review state: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    });
+
     register(NAMESPACE + '.openChanges', node => {
         return provider!.openChanges(node);
     });

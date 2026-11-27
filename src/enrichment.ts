@@ -61,6 +61,7 @@ export class EnrichmentController implements TreeDataProvider<Step>, Disposable 
     private running = false;
     private readonly completed: (() => void)[] = [];
     private disposed = false;
+    private readonly clearingRoots = new Set<string>();
     private panel?: WebviewPanel;
     private panelRoot?: string;
     private activeRoot?: string;
@@ -131,6 +132,7 @@ export class EnrichmentController implements TreeDataProvider<Step>, Disposable 
         const seen = new Set<string>();
         for (const comparison of this.host.getEnrichmentComparisons()) {
             seen.add(comparison.root);
+            if (this.clearingRoots.has(comparison.root)) { continue; }
             const signature = JSON.stringify([comparison.head, comparison.branch, comparison.selection]);
             const existing = this.entries.get(comparison.root);
             if (existing?.signature === signature) { continue; }
@@ -144,7 +146,7 @@ export class EnrichmentController implements TreeDataProvider<Step>, Disposable 
         if (changed) { this.updateUI(); }
     }
     private schedule(root: string): void {
-        if (this.disposed) { return; }
+        if (this.disposed || this.clearingRoots.has(root)) { return; }
         const entry = this.entries.get(root);
         if (entry) { entry.revision++; }
         this.pending.add(root);
@@ -202,6 +204,17 @@ export class EnrichmentController implements TreeDataProvider<Step>, Disposable 
         if (this.running) { await new Promise<void>(resolve => this.completed.push(resolve)); }
         if (this.timer) { clearTimeout(this.timer); this.timer = undefined; }
         if (!this.disposed) { await this.drain(); }
+    }
+    async clear(root: string): Promise<void> {
+        this.clearingRoots.add(root);
+        this.entries.get(root)?.watcher?.close();
+        this.entries.delete(root);
+        this.pending.delete(root);
+        this.requestedNote = undefined;
+        if (this.panelRoot === root) { this.panel?.dispose(); }
+        this.updateUI();
+        try { await this.worker.call('clear', root); }
+        finally { this.clearingRoots.delete(root); this.reconcile(); }
     }
     async importFile(root: string, file: string): Promise<void> {
         await this.worker.call('publish', root, file);

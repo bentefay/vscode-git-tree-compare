@@ -122,3 +122,11 @@ library or agent-supplied script. Webview navigation includes the publication ID
 so an old button cannot select the same index in a replacement analysis. Native
 guide commands likewise retain their publication identity. Enrichment labels do
 not change approval state, file icons or changed-since-review filename decorations.
+
+
+The confirmed review reset deletes only the selected worktree's enrichment v1
+storage, after checking its parent directories for symlinks, using the existing
+serial worker. It never invokes checkout, reset or clean. Synced repository reset
+boundaries invalidate older approvals/history, including records from deleted
+branches; late checkbox work cannot write across a reset boundary. Clean diff tabs
+for the selected checkout close through VS Code's tab API; dirty tabs remain open.

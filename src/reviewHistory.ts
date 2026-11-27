@@ -71,7 +71,7 @@ export class ReviewHistory {
         });
     }
 
-    list(scope: string): Promise<ReviewCheckpoint[]> {
+    list(scope: string, resetBefore = 0): Promise<ReviewCheckpoint[]> {
         return this.enqueue(async () => {
             if (await this.reconcile()) { await this.storage.update(LOCAL_KEY, this.known); }
             const result: ReviewCheckpoint[] = [];
@@ -79,12 +79,24 @@ export class ReviewHistory {
             for (const [commit, files] of Object.entries(this.known[scope] ?? {})) {
                 if (++visited % 100 === 0) { await new Promise<void>(resolve => setImmediate(resolve)); }
                 let reviewedAt = 0, fileCount = 0;
-                for (const time of Object.values(files)) { reviewedAt = Math.max(reviewedAt, time); fileCount++; }
+                for (const time of Object.values(files)) { if (!resetBefore || time > resetBefore) { reviewedAt = Math.max(reviewedAt, time); fileCount++; } }
+                if (!fileCount) { continue; }
                 result.push({ commit, reviewedAt, fileCount });
             }
             return result.sort((a, b) => b.reviewedAt - a.reviewedAt || a.commit.localeCompare(b.commit));
         });
     }
 
+    latestTimestamp(): Promise<number> {
+        return this.enqueue(async () => {
+            await this.reconcile();
+            let latest = 0, visited = 0;
+            for (const commits of Object.values(this.known)) for (const files of Object.values(commits)) {
+                if (++visited % 100 === 0) { await new Promise<void>(resolve => setImmediate(resolve)); }
+                for (const time of Object.values(files)) { latest = Math.max(latest, time); }
+            }
+            return latest;
+        });
+    }
     flush(): Promise<void> { return this.queue; }
 }

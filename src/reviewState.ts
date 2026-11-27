@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'crypto';
 
 export const REVIEW_SYNC_KEY = 'reviews.v1';
+export const REVIEW_RESETS_KEY = 'reviews.resets.v1';
+const RESETS_LOCAL_KEY = REVIEW_RESETS_KEY + '.local';
 const LOCAL_KEY = 'reviews.v1.local';
 const PATHS_KEY = 'reviews.v1.paths';
 interface Storage {
@@ -88,9 +90,10 @@ export class ReviewStore {
     private queue: Promise<void> = Promise.resolve();
     private readonly writer = randomUUID();
     private known: Records = {};
+    private resets: Record<string, number> = {};
     private pathWrites = new Map<string, ReviewPath | undefined>();
     constructor(private readonly storage: Storage) {
-        storage.setKeysForSync?.([REVIEW_SYNC_KEY, 'reviews.history.v1']);
+        storage.setKeysForSync?.([REVIEW_SYNC_KEY, 'reviews.history.v1', REVIEW_RESETS_KEY]);
     }
     private read(): Records {
         // Memento change notifications (including our own writes echoed back by
@@ -99,8 +102,44 @@ export class ReviewStore {
         this.known = mergeReviews(this.known, this.storage.get(LOCAL_KEY), this.storage.get(REVIEW_SYNC_KEY));
         return this.known;
     }
-    get(key: string): ReviewRecord | undefined { return this.read()[key]; }
-    snapshot(): Readonly<Records> { return this.read(); }
+    resetBefore(scope: string): number {
+        for (const value of [this.storage.get(RESETS_LOCAL_KEY), this.storage.get(REVIEW_RESETS_KEY)]) {
+            if (!value || typeof value !== 'object') { continue; }
+            for (const [key, time] of Object.entries(value)) {
+                if (/^[sl]:[a-f0-9]{64}$/.test(key) && Number.isSafeInteger(time) && time >= 0) {
+                    this.resets[key] = Math.max(this.resets[key] ?? 0, time);
+                }
+            }
+        }
+        return this.resets[scope] ?? 0;
+    }
+    private async saveResets(): Promise<void> {
+        const synced = Object.fromEntries(Object.entries(this.resets).filter(([key]) => key.startsWith('s:')));
+        if (JSON.stringify(this.storage.get(RESETS_LOCAL_KEY) ?? {}) !== JSON.stringify(this.resets)) { await this.storage.update(RESETS_LOCAL_KEY, this.resets); }
+        if (JSON.stringify(this.storage.get(REVIEW_RESETS_KEY) ?? {}) !== JSON.stringify(synced)) { await this.storage.update(REVIEW_RESETS_KEY, synced); }
+    }
+    clearScope(scope: string, historyTime = 0): Promise<void> {
+        return this.enqueue(async () => {
+            let cutoff = Math.max(Date.now(), historyTime, this.resetBefore(scope));
+            for (const record of Object.values(this.read())) { cutoff = Math.max(cutoff, record.updatedAt); }
+            this.resets[scope] = cutoff + 1;
+            // A synced reset boundary also invalidates approvals for deleted branches
+            // and records arriving later from an offline device. No path index needed.
+            await this.saveResets();
+        });
+    }
+    get(key: string, scope?: string): ReviewRecord | undefined {
+        const record = this.read()[key];
+        const cutoff = scope ? this.resetBefore(scope) : 0;
+        return record && (!cutoff || record.updatedAt > cutoff) ? record : undefined;
+    }
+    snapshot(scope?: string): Readonly<Records> {
+        const records = this.read();
+        if (!scope) { return records; }
+        const cutoff = this.resetBefore(scope);
+        if (!cutoff) { return records; }
+        return Object.fromEntries(Object.entries(records).filter(([, record]) => record.updatedAt > cutoff));
+    }
     paths(): Record<string, ReviewPath> {
         const result: Record<string, ReviewPath> = {};
         const stored = this.storage.get<Record<string, ReviewPath>>(PATHS_KEY);
@@ -129,13 +168,19 @@ export class ReviewStore {
         this.queue = result.catch(() => {});
         return result;
     }
-    reconcile(): Promise<void> { return this.enqueue(() => this.save(this.read())); }
-    setMany(updates: ReviewUpdate[]): Promise<void> {
+    reconcile(): Promise<void> { return this.enqueue(async () => {
+        this.resetBefore('');
+        await this.saveResets();
+        await this.save(this.read());
+    }); }
+    setMany(updates: ReviewUpdate[], scope?: string, expectedReset?: number): Promise<void> {
         return this.enqueue(async () => {
+            const reset = scope ? this.resetBefore(scope) : 0;
+            if (expectedReset !== undefined && reset !== expectedReset) { throw new Error('Review state was reset while recording approval'); }
             const records = this.read();
             const paths = this.paths();
             for (const { key, fingerprint, contentOnly, commit, path } of updates) {
-                records[key] = { fingerprint, updatedAt: Math.max(Date.now(), (records[key]?.updatedAt ?? 0) + 1), writer: this.writer };
+                records[key] = { fingerprint, updatedAt: Math.max(Date.now(), reset + 1, (records[key]?.updatedAt ?? 0) + 1), writer: this.writer };
                 if (fingerprint && contentOnly) { records[key].contentOnly = true; }
                 if (fingerprint && isCommitId(commit)) { records[key].commit = commit; }
                 if (fingerprint && path && validPath(path.source) && validPath(path.destination)) {

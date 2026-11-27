@@ -3,7 +3,7 @@ import { isCommitId } from './reviewState';
 import { resolveReviewCommit } from './reviewDiff';
 import type { ReviewCheckpoint } from './reviewHistory';
 
-export interface ComparisonBase { commit: string; label: string; }
+export interface ComparisonBase { commit: string; label: string; resetId?: string; }
 export interface NavigationContext {
     key: string;
     repoRoot: string;

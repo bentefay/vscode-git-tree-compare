@@ -553,4 +553,59 @@ describe('Packaged VSIX', function () {
         await browser.driver.wait(async () => (await browser.driver.findElements(By.css('.monaco-diff-editor'))).length > 0, 10000);
     });
 
+    it('clears review state from the view menu and keeps it cleared after restarting', async () => {
+        const file = path.join(process.env.GTC_TEST_REPOSITORY, 'example.txt');
+        const contents = await fs.readFile(file);
+        const checkboxState = () => browser.driver.executeScript(() => {
+            for (const row of document.querySelectorAll('.customview-tree .monaco-list-row')) {
+                if (row.querySelector('.label-name')?.textContent === 'example.txt') return row.querySelector('[role="checkbox"]')?.getAttribute('aria-checked');
+            }
+        });
+        await (await (await row('example.txt')).findElement(By.css('[role="checkbox"]'))).click();
+        await browser.driver.wait(async () => await checkboxState() === 'true', 15000);
+        const header = await browser.driver.findElement(By.css('.pane-header[aria-label="repository Section"]'));
+        await browser.driver.actions().move({ origin: header }).perform();
+        await (await header.findElement(By.css('.codicon-toolbar-more'))).click();
+        const item = await browser.driver.wait(async () => {
+            const items = await browser.driver.findElements(By.css('.context-view .action-label'));
+            for (const host of await browser.driver.findElements(By.css('.shadow-root-host'))) {
+                items.push(...await (await host.getShadowRoot()).findElements(By.css('.action-label')));
+            }
+            for (const candidate of items) if (await candidate.isDisplayed() && (await candidate.getText()) === 'Clear All Review State…') return candidate;
+            return false;
+        }, 10000, 'The repository menu must offer Clear All Review State');
+        await browser.takeScreenshot('clear-review-state-menu');
+        await browser.driver.actions().move({ origin: item }).click().perform();
+        const dialog = await browser.driver.wait(async () => {
+            for (const d of await browser.driver.findElements(By.css('.monaco-dialog-box'))) if (await d.isDisplayed()) return d;
+            return false;
+        }, 10000);
+        assert.match(await dialog.getText(), /Source files, Git history, settings and unsaved editors are preserved/);
+        await browser.takeScreenshot('clear-review-state-confirmation');
+        for (const button of await dialog.findElements(By.css('.monaco-button'))) {
+            if (await button.getText() === 'Clear State') { await button.click(); break; }
+        }
+        await browser.driver.wait(async () => await checkboxState() === 'false', 15000);
+        await browser.driver.wait(async () => !(await (await row('example.txt')).getText()).includes('important'), 15000);
+        assert.deepEqual(await fs.readFile(file), contents);
+        await browser.takeScreenshot('review-state-cleared');
+        await browser.quit();
+        const profile = path.join(process.env.TEST_RESOURCES, 'restart-profile');
+        await fs.rm(profile, { recursive: true, force: true });
+        await fs.cp(path.join(process.env.TEST_RESOURCES, 'settings'), profile, {
+            recursive: true,
+            filter: async source => {
+                if (path.basename(source) === 'DevToolsActivePort') return false;
+                const stat = await fs.lstat(source); return stat.isFile() || stat.isDirectory();
+            },
+        });
+        await browser.start(process.env.GTC_UI_LAUNCHER, [process.env.GTC_TEST_REPOSITORY]);
+        await browser.waitForWorkbench();
+        await (await new ActivityBar().getViewControl('Git Tree Compare')).openView();
+        await row('example.txt');
+        await browser.driver.wait(async () => await checkboxState() === 'false', 15000);
+        assert.ok(!(await (await row('example.txt')).getText()).includes('important'));
+        await browser.takeScreenshot('review-state-cleared-after-restart');
+    });
+
 });

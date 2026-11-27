@@ -17,3 +17,5 @@ export function saveSelection(repo: string, selection: Selection, expectedHead?:
 export function context(repo: string, selection?: Selection): Promise<Snapshot>;
 export function load(repo: string, selection: Selection): Promise<EnrichmentState>;
 export function publish(repo: string, file: string): Promise<{ snapshotId: string; file: string }>;
+
+export function clear(repo: string): Promise<void>;

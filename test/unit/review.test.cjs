@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { execFile, spawn } = require('node:child_process');
-const { ReviewStore, REVIEW_SYNC_KEY, remoteIdentity, reviewKey, sha256 } = require('../../out/reviewState');
+const { ReviewStore, REVIEW_SYNC_KEY, REVIEW_RESETS_KEY, remoteIdentity, reviewKey, sha256 } = require('../../out/reviewState');
 const { ReviewFingerprinter } = require('../../out/reviewFingerprint');
 const { deemphasizedPaths } = require('../../out/reviewRules');
 const { resolveReviewCommit, reviewFileExists } = require('../../out/reviewDiff');
@@ -38,7 +38,7 @@ test('review records sync independently, merge concurrent devices, and preserve 
     const local = reviewKey('/local/repo', 'feature', 'file', false);
     await a.setMany([{ key: local, fingerprint: sha256('local') }]);
     assert.equal(one.get(REVIEW_SYNC_KEY)[local], undefined);
-    assert.deepEqual(one.syncKeys, [REVIEW_SYNC_KEY, 'reviews.history.v1']);
+    assert.deepEqual(one.syncKeys, [REVIEW_SYNC_KEY, 'reviews.history.v1', REVIEW_RESETS_KEY]);
 });
 
 test('portable repository keys strip credentials and transport, distinguish forks/branches/paths', () => {
@@ -334,4 +334,37 @@ test('PR history pages return bounded contiguous metadata without dropping older
     assert.equal(first[0].label, 'Follow-up 109');
     assert.equal(next[0].label, 'Follow-up 9');
     assert.equal(new Set([...first.slice(0, 100), ...next].map(c => c.commit)).size, 110);
+});
+
+
+test('repository reset boundaries survive stale sync snapshots, cover every branch and allow new approvals', async () => {
+    const storage = new Memory(), store = new ReviewStore(storage);
+    const scope = 's:' + sha256('repo'), otherScope = 's:' + sha256('other');
+    const a = reviewKey('repo', 'old-deleted-branch', 'a', true), b = reviewKey('repo', 'current', 'b', true);
+    const other = reviewKey('other', 'current', 'b', true);
+    await store.setMany([a, b, other].map(key => ({ key, fingerprint: sha256(key), commit: 'a'.repeat(40) })));
+    const old = storage.get(REVIEW_SYNC_KEY);
+    await store.clearScope(scope);
+    assert.equal(store.get(a, scope), undefined);
+    assert.equal(store.get(b, scope), undefined);
+    assert.ok(store.get(other, otherScope)?.commit);
+    await storage.update(REVIEW_SYNC_KEY, old);
+    await storage.update(REVIEW_RESETS_KEY, {});
+    const restarted = new ReviewStore(storage);
+    await restarted.reconcile();
+    assert.equal(restarted.get(a, scope), undefined);
+    await assert.rejects(restarted.setMany([{ key: b, fingerprint: sha256('queued before reset') }], scope, 0), /reset/);
+    await restarted.setMany([{ key: b, fingerprint: sha256('new review'), commit: 'b'.repeat(40) }], scope, restarted.resetBefore(scope));
+    assert.equal(restarted.get(b, scope).commit, 'b'.repeat(40));
+    const device = new Memory();
+    await device.update(REVIEW_SYNC_KEY, storage.get(REVIEW_SYNC_KEY));
+    await device.update(REVIEW_RESETS_KEY, storage.get(REVIEW_RESETS_KEY));
+    const remote = new ReviewStore(device);
+    assert.equal(remote.get(a, scope), undefined);
+    assert.equal(remote.get(b, scope).commit, 'b'.repeat(40));
+    const { ReviewHistory } = require('../../out/reviewHistory');
+    const history = new ReviewHistory(storage);
+    const cutoff = restarted.resetBefore(scope);
+    await history.record(scope, [{key: a, commit: 'a'.repeat(40), reviewedAt: cutoff - 1}, {key: b, commit: 'b'.repeat(40), reviewedAt: cutoff + 1}]);
+    assert.deepEqual((await history.list(scope, cutoff)).map(c => c.commit), ['b'.repeat(40)]);
 });

@@ -437,6 +437,11 @@
                 "title": "Toggle Review Explanations",
                 "category": "Git Tree Compare",
                 "icon": "$(comment-discussion)"
+            },
+            {
+                "command": "gitTreeCompare.clearReviewState",
+                "title": "Clear All Review State\u2026",
+                "category": "Git Tree Compare"
             }
         ],
         "submenus": [
@@ -596,12 +601,12 @@
                 },
                 {
                     "command": "gitTreeCompare.switchToFullDiff",
-                    "when": "view == gitTreeCompare && config.gitTreeCompare.diffMode == merge",
+                    "when": "view == gitTreeCompare && (config.gitTreeCompare.diffMode == merge || gitTreeCompare.automaticBase)",
                     "group": "3_options"
                 },
                 {
                     "command": "gitTreeCompare.switchToMergeDiff",
-                    "when": "view == gitTreeCompare && config.gitTreeCompare.diffMode == full",
+                    "when": "view == gitTreeCompare && config.gitTreeCompare.diffMode == full && !gitTreeCompare.automaticBase",
                     "group": "3_options"
                 },
                 {
@@ -713,6 +718,11 @@
                     "command": "gitTreeCompare.enrichment.toggleExplanations",
                     "when": "view == gitTreeCompare || view == gitTreeCompareGuide",
                     "group": "enrichment@toggleExplanations"
+                },
+                {
+                    "command": "gitTreeCompare.clearReviewState",
+                    "when": "view == gitTreeCompare",
+                    "group": "9_reset"
                 }
             ],
             "view/item/context": [
@@ -866,11 +876,11 @@
                 },
                 {
                     "command": "gitTreeCompare.switchToFullDiff",
-                    "when": "view == gitTreeCompare && viewItem == ref && config.gitTreeCompare.diffMode == merge"
+                    "when": "view == gitTreeCompare && viewItem == ref && (config.gitTreeCompare.diffMode == merge || gitTreeCompare.automaticBase)"
                 },
                 {
                     "command": "gitTreeCompare.switchToMergeDiff",
-                    "when": "view == gitTreeCompare && viewItem == ref && config.gitTreeCompare.diffMode == full"
+                    "when": "view == gitTreeCompare && viewItem == ref && config.gitTreeCompare.diffMode == full && !gitTreeCompare.automaticBase"
                 },
                 {
                     "command": "gitTreeCompare.copyPath",
@@ -1044,7 +1054,7 @@
                         "merge",
                         "full"
                     ],
-                    "description": "Whether to compare against the selected base ref directly (full mode) or by computing a merge base first (merge mode).",
+                    "description": "For manually selected base refs, compare directly (full) or compute a merge-base (merge). Automatic comparisons always use the merge-base.",
                     "default": "merge"
                 },
                 "gitTreeCompare.iconsMinimal": {

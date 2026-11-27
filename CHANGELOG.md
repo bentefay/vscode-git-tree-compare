@@ -1,5 +1,10 @@
 ## Unreleased
 
+- Follow the branch merge-base automatically, naming origin/main when it matches;
+  preserve explicit base choices and detect target branch advances.
+- Add Clear All Review State to the repository menu, with a scoped confirmation,
+  sync-safe review reset, enrichment removal and comparison/filter reset.
+
 - Make enrichment guides linked walkthroughs with multiple diff/range targets per
   step and mandatory coverage of important files; fix duplicate guide numbering.
 - Add independent attention levels, combinable text labels and coloured Review

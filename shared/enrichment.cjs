@@ -318,4 +318,10 @@ async function load(repo, selection) {
     return { directory: loc.directory, publicationId: pointer.run, current: snapshot.id === now.id, fresh, data: format.normalize(run.data), snapshot };
 }
 
-module.exports = { KINDS, LIMIT, hash, relative, location, saveSelection, capture, context, validate, validateFile, publish, load, readJSON };
+async function clear(repo) {
+    const loc = await location(repo);
+    await secureDirectory(loc); // Reject redirects before deleting only our own storage.
+    await fs.rm(loc.directory, { recursive: true, force: true });
+}
+
+module.exports = { clear, KINDS, LIMIT, hash, relative, location, saveSelection, capture, context, validate, validateFile, publish, load, readJSON };

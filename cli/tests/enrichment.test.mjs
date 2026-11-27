@@ -170,3 +170,20 @@ test('the bundled skill example validates against real captured source and range
     await writeFile(f.output, JSON.stringify(example));
     await core.validateFile(f.root, f.output);
 });
+
+
+test('clearing enrichment removes all runs without touching source or following storage symlinks', async t => {
+    const f = await fixture(t);
+    await core.publish(f.root, f.output);
+    const before = await readFile(path.join(f.root, 'file [x].txt'));
+    const loc = await core.location(f.root);
+    await core.clear(f.root);
+    await assert.rejects(readFile(path.join(loc.directory, 'selection.json')), /ENOENT/);
+    assert.equal((await core.load(f.root, f.selection)).data, null);
+    assert.deepEqual(await readFile(path.join(f.root, 'file [x].txt')), before);
+    const outside = path.join(f.directory, 'external-storage'); await mkdir(outside);
+    await writeFile(path.join(outside, 'keep'), 'keep');
+    await symlink(outside, loc.directory);
+    await assert.rejects(core.clear(f.root), /symbolic link/);
+    assert.equal(await readFile(path.join(outside, 'keep'), 'utf8'), 'keep');
+});

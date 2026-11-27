@@ -95,6 +95,9 @@ export async function getAbsGitCommonDir(repo: Repository): Promise<string> {
 }
 
 export async function getDefaultBranch(repo: Repository, head: Ref): Promise<string | undefined> {
+    const refs = await repo.getRefs();
+    const names = new Set(refs.map(ref => ref.name));
+    if (names.has('origin/main')) { return 'origin/main'; }
     // determine which remote HEAD is tracking
     let remote: string
     if (head.name) {
@@ -118,10 +121,9 @@ export async function getDefaultBranch(repo: Repository, head: Ref): Promise<str
     try {
         const result = await repo.exec(['symbolic-ref', '--short', remoteHead]);
         const remoteHeadBranch = result.stdout.trim();
-        return remoteHeadBranch;
-    } catch (e) {
-        return;
-    }
+        if (names.has(remoteHeadBranch)) { return remoteHeadBranch; }
+    } catch { /* A local clone may not have a remote HEAD symbolic ref. */ }
+    return ['main', 'origin/master', 'master'].find(name => names.has(name));
 }
 
 export async function getBranchCommit(branchName: string, repo: Repository): Promise<string> {

@@ -1170,3 +1170,152 @@ describe('Review base navigation', () => {
         } finally { release(); pane.dispose(); events.forEach(event => event.dispose()); }
     });
 });
+
+describe('Automatic bases and clearing review state', () => {
+    let provider, enrichment, comparison;
+    before(async () => {
+        ({ provider, enrichment } = await vscode.extensions.getExtension('bentefay.git-tree-compare').activate());
+        await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        comparison = provider.activeComparison;
+    });
+    async function find(file) {
+        async function visit(parent) {
+            for (const node of await provider.getChildren(parent)) {
+                if (node.dstAbsPath === file) return node;
+                if (provider.getTreeItem(node).collapsibleState !== vscode.TreeItemCollapsibleState.None) {
+                    const found = await visit(node); if (found) return found;
+                }
+            }
+        }
+        return visit();
+    }
+    async function approve(node) {
+        await eventually(async () => {
+            await provider.handleChangeCheckboxState({ items: [[node, vscode.TreeItemCheckboxState.Checked]] });
+            return provider.getTreeItem(node).checkboxState === vscode.TreeItemCheckboxState.Checked;
+        });
+    }
+    it('follows the merge-base, names an identical origin/main, and preserves explicit full comparisons', async () => {
+        const original = git('rev-parse', 'origin/main');
+        const config = vscode.workspace.getConfiguration('gitTreeCompare');
+        const oldMode = config.get('diffMode');
+        const index = path.join(process.env.GTC_TEST_RESULTS, 'upstream-index');
+        const indexGit = (...args) => execFileSync('git', args, { cwd: root, env: { ...process.env, GIT_INDEX_FILE: index }, encoding: 'utf8' }).trim();
+        try {
+            // Exercise migration from the Full Diff setting shown in the reported menu.
+            await config.update('diffMode', 'full', vscode.ConfigurationTarget.Workspace);
+            await eventually(() => provider.fullDiff === true);
+            await provider.resetReviewBase();
+            assert.equal(comparison.displayBase, 'origin/main');
+            assert.equal(comparison.getDiffEndpoints().leftRef, original);
+            const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: root, input: 'upstream only\n', encoding: 'utf8' }).trim();
+            indexGit('read-tree', original);
+            indexGit('update-index', '--add', '--cacheinfo', `100644,${blob},upstream-only.txt`);
+            const tree = indexGit('write-tree');
+            const advanced = git('commit-tree', tree, '-p', original, '-m', 'Advance main separately');
+            git('update-ref', 'refs/remotes/origin/main', advanced);
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+            assert.equal(comparison.getDiffEndpoints().leftRef, original);
+            assert.equal(comparison.displayBase, `Merge-base · ${original.slice(0, 8)}`);
+            assert.equal(comparison.reviewFiles().some(file => file.dstAbsPath.endsWith('/upstream-only.txt')), false);
+            await provider.switchToFullDiff();
+            assert.equal(comparison.getDiffEndpoints().leftRef, advanced);
+            assert.equal(comparison.automaticBase, false);
+            assert.equal(comparison.reviewFiles().some(file => file.dstAbsPath.endsWith('/upstream-only.txt')), true);
+            await comparison.updateRefs();
+            assert.equal(comparison.getDiffEndpoints().leftRef, advanced, 'Explicit base survives a refresh');
+            await provider.resetReviewBase();
+            assert.equal(comparison.getDiffEndpoints().leftRef, original);
+            git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD'));
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+            assert.equal(comparison.displayBase, 'origin/main');
+            assert.equal(comparison.getDiffEndpoints().leftRef, git('rev-parse', 'HEAD'));
+        } finally {
+            git('update-ref', 'refs/remotes/origin/main', original);
+            await config.update('diffMode', oldMode, vscode.ConfigurationTarget.Workspace);
+            await provider.resetReviewBase();
+        }
+    });
+
+    it('clears repository progress across branches, enrichment and diff selections without altering Git or unsaved buffers', async () => {
+        const core = require('../../shared/enrichment.cjs');
+        const file = path.join(root, 'example.txt');
+        const before = await fs.readFile(file);
+        const branch = git('branch', '--show-current');
+        const otherBranch = 'reset-progress-other';
+        const originalWarning = vscode.window.showWarningMessage;
+        let warning;
+        try {
+            await fs.writeFile(file, 'review this reset regression\n');
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+            let node = await find(file); await approve(node);
+            const scope = comparison.reviewResetScope(), currentKey = comparison.keyForReview(node);
+            git('checkout', '-b', otherBranch);
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+            node = await find(file); await approve(node);
+            const otherKey = comparison.keyForReview(node);
+            const otherHistory = comparison.reviewHistoryScope();
+            await comparison.saveSelectedBase({ commit: git('rev-parse', 'origin/main'), label: 'Old pinned base' });
+            git('checkout', branch);
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+            node = await find(file);
+            comparison.selectedBase = { commit: git('rev-parse', 'origin/main'), label: 'Pinned before reset' };
+            await comparison.saveSelectedBase(comparison.selectedBase);
+            comparison.searchFilter = 'example';
+            provider.setHideCheckedFiles(true);
+            await enrichment.refresh();
+            const snapshot = await core.context(root, provider.getEnrichmentComparisons().find(c => c.root === root).selection);
+            const data = { version: 1, snapshotId: snapshot.id, producer: 'Reset fixture', summary: 'Review before clearing.',
+                files: [{ path: 'example.txt', priority: 'important', kind: 'behaviour', reason: 'Read this.', annotations: [] }],
+                guide: [{ path: 'example.txt', title: 'Review it', description: 'Inspect this change.' }] };
+            const output = path.join(process.env.GTC_TEST_RESULTS, 'reset-enrichment.json');
+            await fs.writeFile(output, JSON.stringify(data)); await enrichment.importFile(root, output);
+            await eventually(() => enrichment.getState(root)?.data?.snapshotId === snapshot.id);
+            await provider.openChanges(node);
+            const document = await vscode.workspace.openTextDocument(path.join(root, 'other.txt'));
+            const edit = new vscode.WorkspaceEdit(); edit.insert(document.uri, new vscode.Position(0, 0), 'unsaved reset test\n');
+            await vscode.workspace.applyEdit(edit);
+            const dirtyText = document.getText();
+            const gitState = [git('rev-parse', 'HEAD'), git('status', '--porcelain'), git('diff', '--cached', '--binary')];
+            const contents = await fs.readFile(file);
+            vscode.window.showWarningMessage = async (message, options) => { warning = options.detail; return undefined; };
+            await vscode.commands.executeCommand('gitTreeCompare.clearReviewState');
+            assert.ok(provider.reviewStore.get(currentKey, scope)?.fingerprint, 'Cancel must preserve review progress');
+            assert.ok(enrichment.getState(root)?.data, 'Cancel must preserve enrichment');
+            vscode.window.showWarningMessage = async () => 'Clear State';
+            await vscode.commands.executeCommand('gitTreeCompare.clearReviewState');
+            assert.match(warning, /Source files.*preserved/);
+            assert.equal(provider.reviewStore.get(currentKey, scope), undefined);
+            assert.equal(provider.reviewStore.get(otherKey, scope), undefined);
+            assert.deepEqual(await provider.reviewHistory.list(otherHistory, provider.reviewStore.resetBefore(scope)), []);
+            assert.equal(provider.getTreeItem(await find(file)).checkboxState, vscode.TreeItemCheckboxState.Unchecked);
+            await eventually(() => !enrichment.getState(root)?.data);
+            assert.deepEqual(enrichment.getChildren(), []);
+            const loc = await core.location(root);
+            await assert.rejects(fs.access(path.join(loc.directory, 'runs')), /ENOENT/);
+            assert.equal(comparison.selectedBase, undefined);
+            assert.equal(comparison.commitFilter.kind, 'all');
+            assert.equal(comparison.searchFilter, undefined);
+            assert.equal(comparison.automaticBase, true);
+            assert.equal(document.isDirty, true);
+            assert.equal(document.getText(), dirtyText);
+            assert.deepEqual(await fs.readFile(file), contents);
+            assert.deepEqual([git('rev-parse', 'HEAD'), git('status', '--porcelain'), git('diff', '--cached', '--binary')], gitState);
+            assert.equal(vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab => !tab.isDirty && tab.input instanceof vscode.TabInputTextDiff), false);
+            git('checkout', otherBranch);
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+            assert.equal(comparison.selectedBase, undefined, 'Old branch base must not return after clearing');
+            node = await find(file);
+            assert.equal(provider.getTreeItem(node).checkboxState, vscode.TreeItemCheckboxState.Unchecked);
+            await approve(node);
+            assert.ok(provider.reviewStore.get(otherKey, scope)?.commit, 'Fresh approvals work after reset');
+            await vscode.window.showTextDocument(document);
+            await vscode.commands.executeCommand('workbench.action.files.revert');
+        } finally {
+            vscode.window.showWarningMessage = originalWarning;
+            git('checkout', branch);
+            await fs.writeFile(file, before);
+            await vscode.commands.executeCommand('gitTreeCompare.refreshAll');
+        }
+    });
+});

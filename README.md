@@ -37,7 +37,8 @@ command and view identifiers.
 ## Start a comparison
 
 1. Open a Git repository and select **Git Tree Compare** in the activity bar.
-2. Use **Change Base…** to choose a branch, tag or commit.
+2. The automatic base is the branch merge-base, shown as **origin/main** when
+   it equals that tip. Use **Change Base…** to choose a different branch, tag or commit.
 3. Select a file to open its diff. Use the context menu to open the file itself,
    copy its path, or open its containing folder on disk.
    Folder context menus also offer **Open Containing Folder** to reveal the selected
@@ -51,14 +52,32 @@ inside collapsed folders. Choose **Open Git Tree Compare Diff** in the same menu
 to select the file and open its changes against the current comparison base.
 Both actions also work from Git diff editors.
 
-The default **merge** mode compares your working tree with its common ancestor
-with the selected base, which is useful for reviewing a feature branch. **Full**
-mode compares directly with the selected base. The chosen base is remembered per
-repository.
+The automatic comparison follows the merge-base with `origin/main`, falling back
+to the remote default branch or local main/master when necessary. If main advances
+independently, the view shows **Merge-base · SHA** and excludes those unrelated
+upstream changes. If the common ancestor equals the target tip, it shows the branch
+name instead. Automatic selection uses the merge-base even with an older Full Diff
+setting. Explicit base choices are remembered; **merge** mode computes their common
+ancestor, while **Full Diff** uses the chosen target directly. **Reset Comparison
+Base** returns to automatic selection.
 
 You can open multiple diffs at once, or use **Open All Changes** for VS Code's
 multi-file diff editor. **Discard Changes** restores files from the comparison
 base; use it only when you intend to replace those changes.
+
+## Clear review state
+
+The repository view's **… → Clear All Review State…** action asks for confirmation,
+then clears that repository's review checkmarks, saved review baselines and review
+history across all branches (including synced progress in other checkouts). It
+removes all enrichment runs and local Orca notes for the selected worktree, resets
+its comparison selections and filters, and closes its clean diff tabs. Ordinary
+editors, unsaved buffers, source files, Git history and settings are preserved.
+Other repositories keep their progress. Messages already sent to Orca are unaffected.
+
+Reset markers prevent old approvals from returning through Settings Sync or branch
+switches; newly reviewed files can be checked normally. This is a review reset,
+not a Git discard operation.
 
 ## Track review progress
 

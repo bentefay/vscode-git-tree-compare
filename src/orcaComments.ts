@@ -241,6 +241,19 @@ export class OrcaComments implements vscode.Disposable {
         return saved;
     }
 
+    assertCanClear(root: string): void {
+        for (const thread of this.busy) {
+            if (this.recordFor(thread)?.root === root) { throw new Error('Wait for the Orca message to finish sending before clearing review state.'); }
+        }
+    }
+    async clear(root: string): Promise<void> {
+        this.assertCanClear(root);
+        for (const [id, record] of this.records) if (record.root === root) {
+            this.records.delete(id); this.threads.get(id)?.dispose(); this.threads.delete(id);
+        }
+        await this.persist();
+    }
+
     private async deleteThread(thread: vscode.CommentThread): Promise<void> {
         if (this.busy.has(thread)) return;
         const record = this.recordFor(thread);

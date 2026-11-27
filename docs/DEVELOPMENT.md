@@ -254,3 +254,23 @@ The bundled skill contains the writing guidance and a complete linked example
 under `skills/enrich-pr/references/example.json`. The CLI tests validate that
 example against real disposable Git content. Global skill installation copies
 references along with the launcher; rerun the installer to update installed skills.
+
+
+## Automatic comparisons and review reset
+
+Automatic and manual target choices are separate (`baseRefMode_<root>`). Legacy
+saved default targets migrate to automatic; custom targets and pinned review bases
+remain selected. Ref checks resolve target tips to commits and detect updates even
+when HEAD does not move. Automatic comparisons always use the merge-base; an explicit
+Full Diff action selects the current target tip. Native tree labels show the target
+name only when it is the actual base, otherwise the merge-base's short SHA.
+
+`gitTreeCompare.clearReviewState` captures the selected checkout before showing its
+confirmation. It invalidates in-flight approvals, drains the checkbox queue, removes
+that worktree's enrichment through the worker, and writes an opaque repository reset
+boundary (`reviews.resets.v1`, with a local mirror). Review/history reads exclude
+records at or before that boundary, across all branches. Merge metadata and old opaque
+records may remain as tombstones; stale/offline snapshots must not resurrect progress.
+Reset metadata syncs only for portable repository identities. A nonce invalidates
+saved comparison bases for every branch of the selected worktree. Other repositories'
+records and selections are unaffected. No source file, index or Git ref is changed.
